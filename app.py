@@ -1,5 +1,6 @@
 '''
     TO DO:
+        - error checking on authenticate()
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
 '''
@@ -8,10 +9,9 @@ import click
 import requests
 import hashlib
 import pickle
-
 from icecream import ic
-
 from config import API_KEY, SHARED_SECRET
+
 
 auth_url = 'https://www.rememberthemilk.com/services/auth/'
 methods_url = 'https://api.rememberthemilk.com/services/rest/'
@@ -28,12 +28,14 @@ except FileNotFoundError:
 except EOFError:
     settings = {}
 
+
 #  HELPER FUNCTIONS
 def save(settings):
-    ''' Save items to file. '''
+    ''' Save user settings to file. '''
 
     with open(user_settings, 'wb') as f:
         pickle.dump(settings, f)
+
 
 def make_api_sig(params):
     '''
@@ -51,7 +53,7 @@ def make_api_sig(params):
 
 
 def get_frob():
-    ''' Returns *frob*. Part of the authorization process.'''
+    ''' Returns *frob*. Part of the authentication process.'''
 
     params = {'method':'rtm.auth.getFrob', 'api_key':API_KEY, 'format':'json'}
 
@@ -61,7 +63,8 @@ def get_frob():
     r = requests.get(methods_url, params=params)
 
     if r.status_code != 200:
-        raise Exception("Problem with API request.")
+        raise Exception("Error ({}) connecting to Remember the Milk. Please "
+                        "try again later.".format(r.status_code))
 
     frob = r.json()['rsp']['frob']
 
@@ -76,28 +79,33 @@ def authenticate():
     '''
 
     frob = get_frob()
-    params = {'api_key':API_KEY, 'frob':frob, 'perms':'read'}
+    params = {'api_key':API_KEY,
+              'frob':frob,
+              'perms':'read'}
     params['api_sig'] = make_api_sig(params)
 
-    r_authorization = requests.get(auth_url, params=params)
+    r_authentication = requests.get(auth_url, params=params)
 
     click.echo('')
-    click.echo('Open the following link in your browser in order to approve authorization '
+    click.echo('Open the following link in your browser in order to approve authentication '
         'from Remember the Milk:')
     click.echo('')
-    click.echo(r_authorization.url)
+    click.echo(r_authentication.url)
 
     # pause the application while the user approves authentication
     value = click.prompt('Type "c" and then press enter to continue.')
 
-    # now get the authorization token
-    params = {'api_key':API_KEY, 'method':'rtm.auth.getToken', 'frob':frob, 'format':'json'}
+    # now get the authentication token
+    params = {'api_key':API_KEY,
+              'method':'rtm.auth.getToken',
+              'format':'json',
+              'frob':frob}
     # sign every request
     params['api_sig'] = make_api_sig(params)
 
     r_token = requests.get(methods_url, params=params)
 
-    r_token.json()
+    #r_token.json()
     settings['token'] = r_token.json()['rsp']['auth']['token']
     settings['username'] = r_token.json()['rsp']['auth']['user']['username']
     settings['name'] = r_token.json()['rsp']['auth']['user']['fullname']
@@ -112,18 +120,35 @@ def check_token():
     ''' Check user token. Do nothing, refresh token, or authenticate. '''
 
     if settings['token']:
-        params = {'api_key':API_KEY, 'auth_token':settings['token']}
+        params = {'api_key':API_KEY,
+                  'method': 'rtm.auth.checkToken', 
+                  'format':'json',
+                  'auth_token':settings['token']}
         params['api_sig'] = make_api_sig(params)
 
         r = requests.get(methods_url, params=params)
 
         if r.status_code != 200:
-            click.echo("Your authentication has expired. We will attempt to re-authenticate.")
+            raise Exception("Error ({}) connecting to Remember the Milk. Please "
+                            "try again later.".format(r.status_code))
+
+        # now get and check the actual results of API query
+        r = r.json()
+        response_code = r['rsp']['stat']
+
+        if response_code != 'ok':
+            error_code = r['rsp']['err']['code']
+            error_msg = r['rsp']['err']['msg']
+            click.echo("There's been an error.")
+            click.echo('{}: {}'.format({error_code}, {error_msg}))
+            click.echo('Re-authenticating...')
             authenticate()
+
     else:
         authenticate()
 
     return
+
 
 @click.group()
 def main():
@@ -135,18 +160,21 @@ def test():
     check_token()
     click.echo('Hello {}!'.format(settings['name']))
 
+
 @main.command()
 def get_completed_tasks():
     check_token()
     click.echo('Token good.')
-    params = {'method':'rtm.tasks.getList', 'api_key':API_KEY, 'format':'json',
-              'auth_token':settings['token'], 'filter':'completed:today'}
+    params = {'method':'rtm.tasks.getList',
+              'api_key':API_KEY,
+              'format':'json',
+              'auth_token':settings['token'],
+              'filter':'completed:today'}
     params['api_sig'] = make_api_sig(params)
 
     r = requests.get(methods_url, params=params)
 
     print(r.json()['rsp']['tasks'])
-
 
 
 @main.command()
