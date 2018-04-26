@@ -121,7 +121,7 @@ def check_token():
 
     if settings['token']:
         params = {'api_key':API_KEY,
-                  'method': 'rtm.auth.checkToken', 
+                  'method': 'rtm.auth.checkToken',
                   'format':'json',
                   'auth_token':settings['token']}
         params['api_sig'] = make_api_sig(params)
@@ -132,16 +132,12 @@ def check_token():
             raise Exception("Error ({}) connecting to Remember the Milk. Please "
                             "try again later.".format(r.status_code))
 
-        # now get and check the actual results of API query
-        r = r.json()
-        response_code = r['rsp']['stat']
+        r = r.json()['rsp']
 
-        if response_code != 'ok':
-            error_code = r['rsp']['err']['code']
-            error_msg = r['rsp']['err']['msg']
+        if r['stat'] != 'ok':
             click.echo("There's been an error.")
-            click.echo('{}: {}'.format({error_code}, {error_msg}))
-            click.echo('Re-authenticating...')
+            click.echo('{}: {}'.format({r['err']['code']}, {r['err']['msg']}))
+            click.echo('Attempting to reauthenticate...')
             authenticate()
 
     else:
