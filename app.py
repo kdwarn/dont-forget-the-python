@@ -230,8 +230,11 @@ def lists(archived, smart, all):
                 if rtm_list['smart'] == '0' and rtm_list['archived'] == '0':
                     lists_names.append(rtm_list['name'])
 
-    for name in sorted(lists_names, key=lambda s: s.lower()):
-        print(name)
+    if not lists_names:
+        print('No lists to show.')
+    else:
+        for name in sorted(lists_names, key=lambda s: s.lower()):
+            print(name)
 
     return
 
