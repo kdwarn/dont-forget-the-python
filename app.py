@@ -2,8 +2,13 @@
     TO DO:
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
+        - for lists(), it might be a good idea to first define a class and turn
+          the lists into an object of that class, and return the list of objects.
+          If the API changes, it will be easier to change the variable names in the
+          class than to change them in the function (where they are repeated).
 '''
 
+import datetime
 import click
 import requests
 import hashlib
@@ -162,12 +167,25 @@ def check_token():
 
     return
 
+
+def tidy_task(everything):
+    tasks = []
+    for task_list in everything['list']:
+        print('task_list id:', task_list['id'])
+        for task in task_list['taskseries']:
+            print('task name:', task['name'])
+
+    return
+
+
 ################################################################################
 # commands
 ################################################################################
 @click.group()
 def main():
-    pass
+    """Command line interface for Remember the Milk.
+
+    Type "<command> --help" to see options and additional info."""
 
 
 @main.command()
@@ -177,30 +195,82 @@ def test():
 
 
 @main.command()
-def get_completed_tasks():
+@click.option('--archived', is_flag=True, help="Show archived lists.")
+@click.option('--smart', is_flag=True, help="Show smart lists.")
+@click.option('--all', is_flag=True, help="Show all lists.")
+def lists(archived, smart, all):
+    '''List your lists!'''
     check_token()
     params = {'api_key':API_KEY,
-              'method':'rtm.tasks.getList',
+              'method':'rtm.lists.getList',
               'format':'json',
-              'auth_token':settings['token'],
-              'filter':'completed:today'}
+              'auth_token':settings['token']}
+
     params['api_sig'] = make_api_sig(params)
 
     r = requests.get(methods_url, params=params)
+    lists = get_data_or_raise_exception(r)['lists']['list']
 
-    tasks = get_data_or_raise_exception(r)['tasks']
+    lists_names = []
 
-    print(tasks)
+    for rtm_list in lists:
+        if all:
+            lists_names.append(rtm_list['name'])
+        else:
+            if archived and smart:
+                if rtm_list['smart'] == '1' and rtm_list['archived'] == '1':
+                    lists_names.append(rtm_list['name'])
+            elif archived and not smart:
+                if rtm_list['smart'] == '0' and rtm_list['archived'] == '1':
+                    lists_names.append(rtm_list['name'])
+            elif not archived and smart:
+                if rtm_list['smart'] == '1' and rtm_list['archived'] == '0':
+                    lists_names.append(rtm_list['name'])
+            else:
+                if rtm_list['smart'] == '0' and rtm_list['archived'] == '0':
+                    lists_names.append(rtm_list['name'])
+
+    for name in sorted(lists_names, key=lambda s: s.lower()):
+        print(name)
 
     return
 
 
+@main.command()
+@click.option('--list_name', default='', help="Name of list from which to get tasks.")
+@click.option('--days', default=30, help="Number of days to go back.")
+def completed(list_name, days):
+    check_token()
+    params = {'api_key':API_KEY,
+              'method':'rtm.tasks.getList',
+              'format':'json',
+              'auth_token':settings['token']}
+
+    if list_name:
+        params['filter'] = 'list:' + list_name
+
+    if days:
+        # figure out x days ago date
+        since = datetime.date.today() - datetime.timedelta(days=days)
+        params['filter'] = 'completedAfter:' + str(since)
+
+    params['api_sig'] = make_api_sig(params)
+
+    r = requests.get(methods_url, params=params)
+    everything = get_data_or_raise_exception(r)['tasks']
+
+    tasks = tidy_tasks(everything)
+
+    return
+
+'''
 @main.command()
 @click.argument('out', type=click.File('w'), default='-')
 @click.option('--format', type=str, help="File format.")
 def talk(out, format):
     """Command line interface for Remember the Milk."""
     click.echo('Hello {}!'.format(settings['username']))
+'''
 
 if __name__ == "__main__":
     main()
