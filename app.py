@@ -243,7 +243,7 @@ def lists(archived, smart, all):
     if not sub_list:
         click.secho('No lists to show.', fg='red')
     else:
-        for rtm_list in sorted(sub_list, key=lambda k: k['name']):
+        for rtm_list in sorted(sub_list, key=lambda k: k['name'].lower()):
             click.echo(rtm_list['name'])
 
     return
