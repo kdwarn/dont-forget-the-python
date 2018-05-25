@@ -2,10 +2,7 @@
     TO DO:
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
-        - for lists(), it might be a good idea to first define a class and turn
-          the lists into an object of that class, and return the list of objects.
-          If the API changes, it will be easier to change the variable names in the
-          class than to change them in the function (where they are repeated).
+        - for export(), --completed should include # days to go back for tasks
 '''
 
 import datetime
@@ -31,6 +28,12 @@ except FileNotFoundError:
         settings = {}
 except EOFError:
     settings = {}
+
+
+################################################################################
+# CLASSES
+################################################################################
+
 
 
 ################################################################################
@@ -168,6 +171,21 @@ def check_token():
     return
 
 
+def get_lists():
+    """ Get all of the user's lists."""
+
+    check_token()
+    params = {'api_key':API_KEY,
+              'method':'rtm.lists.getList',
+              'format':'json',
+              'auth_token':settings['token']}
+
+    params['api_sig'] = make_api_sig(params)
+
+    r = requests.get(methods_url, params=params)
+    return get_data_or_raise_exception(r)['lists']['list']
+
+
 def tidy_task(everything):
     tasks = []
     for task_list in everything['list']:
@@ -200,49 +218,44 @@ def test():
 @click.option('--all', is_flag=True, help="Show all lists.")
 def lists(archived, smart, all):
     '''List your lists!'''
-    check_token()
-    params = {'api_key':API_KEY,
-              'method':'rtm.lists.getList',
-              'format':'json',
-              'auth_token':settings['token']}
 
-    params['api_sig'] = make_api_sig(params)
+    lists = get_lists()
 
-    r = requests.get(methods_url, params=params)
-    lists = get_data_or_raise_exception(r)['lists']['list']
-
-    lists_names = []
+    sub_list = []
 
     for rtm_list in lists:
         if all:
-            lists_names.append(rtm_list['name'])
+            sub_list.append(rtm_list)
         else:
             if archived and smart:
                 if rtm_list['smart'] == '1' and rtm_list['archived'] == '1':
-                    lists_names.append(rtm_list['name'])
+                    sub_list.append(rtm_list)
             elif archived and not smart:
                 if rtm_list['smart'] == '0' and rtm_list['archived'] == '1':
-                    lists_names.append(rtm_list['name'])
+                    sub_list.append(rtm_list)
             elif not archived and smart:
                 if rtm_list['smart'] == '1' and rtm_list['archived'] == '0':
-                    lists_names.append(rtm_list['name'])
+                    sub_list.append(rtm_list)
             else:
                 if rtm_list['smart'] == '0' and rtm_list['archived'] == '0':
-                    lists_names.append(rtm_list['name'])
+                    sub_list.append(rtm_list)
 
-    if not lists_names:
-        print('No lists to show.')
+    if not sub_list:
+        click.secho('No lists to show.', fg='red')
     else:
-        for name in sorted(lists_names, key=lambda s: s.lower()):
-            print(name)
+        for rtm_list in sorted(sub_list, key=lambda k: k['name']):
+            click.echo(rtm_list['name'])
 
     return
 
 
 @main.command()
-@click.option('--list_name', default='', help="Name of list from which to get tasks.")
-@click.option('--days', default=30, help="Number of days to go back.")
-def completed(list_name, days):
+@click.option('--list_name', '-l', default='', help="List name.")
+@click.option('--completed', '-c', is_flag=True, help="Completed tasks only.")
+@click.option('--incomplete', '-i', is_flag=True, help="Incomplete tasks only.")
+def export(list_name, completed, incomplete, days):
+    """Export tasks to pdf."""
+
     check_token()
     params = {'api_key':API_KEY,
               'method':'rtm.tasks.getList',
@@ -250,7 +263,17 @@ def completed(list_name, days):
               'auth_token':settings['token']}
 
     if list_name:
-        params['filter'] = 'list:' + list_name
+        lists = get_lists()
+
+        for rtm_list in lists:
+            if list_name == rtm_list['name']:
+                list_id = rtm_list['id']
+
+        if not list_id:
+            return "Sorry, list not found."
+
+        params['list_id'] = list_id
+
 
     if days:
         # figure out x days ago date
@@ -260,20 +283,10 @@ def completed(list_name, days):
     params['api_sig'] = make_api_sig(params)
 
     r = requests.get(methods_url, params=params)
-    everything = get_data_or_raise_exception(r)['tasks']
+    tasks = get_data_or_raise_exception(r)['tasks']['list']
 
-    tasks = tidy_tasks(everything)
+    click.echo(tasks)
 
-    return
-
-'''
-@main.command()
-@click.argument('out', type=click.File('w'), default='-')
-@click.option('--format', type=str, help="File format.")
-def talk(out, format):
-    """Command line interface for Remember the Milk."""
-    click.echo('Hello {}!'.format(settings['username']))
-'''
 
 if __name__ == "__main__":
     main()
