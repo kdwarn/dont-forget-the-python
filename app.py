@@ -1,8 +1,10 @@
 '''
     TO DO:
+        - get 'due' and other tasks attributes properly. Might have to do another
+          loop through the tasks within taskseries
+        - for export(), --completed should include # days to go back for tasks
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
-        - for export(), --completed should include # days to go back for tasks
 '''
 
 import datetime
@@ -30,11 +32,23 @@ except EOFError:
     settings = {}
 
 
+class NoTasksException(Exception):
+    pass
+    # click.secho("No tasks found with given parameters.", fg='red')
+
 ################################################################################
 # CLASSES
 ################################################################################
+class Task:
 
+    def __init__(self, taskseries):
+        self.id = taskseries['id']
+        self.name = taskseries['name']
 
+        if 'due' in taskseries['task']:
+            self.due = taskseries['task']['due']
+        else:
+            self.due = ''
 
 ################################################################################
 #  HELPER FUNCTIONS
@@ -186,14 +200,57 @@ def get_lists():
     return get_data_or_raise_exception(r)['lists']['list']
 
 
-def tidy_task(everything):
-    tasks = []
-    for task_list in everything['list']:
-        print('task_list id:', task_list['id'])
-        for task in task_list['taskseries']:
-            print('task name:', task['name'])
+def get_tasks(list_name, completed, incomplete):
+    ''' Get user tasks, in list_name if given.
 
-    return
+    Inputs:
+        -list_name: name of list_name
+        -completed: integer of number of days in past to get tasks from
+        -incomplete: boolean
+    '''
+
+    check_token()
+    params = {'api_key':API_KEY,
+              'method':'rtm.tasks.getList',
+              'format':'json',
+              'auth_token':settings['token']}
+
+    if list_name:
+        lists = get_lists()
+
+        for rtm_list in lists:
+            if list_name == rtm_list['name']:
+                list_id = rtm_list['id']
+
+        if not list_id:
+            return "Sorry, list not found."
+
+        params['list_id'] = list_id
+
+    if completed:
+        # figure out x days ago date
+        since = datetime.date.today() - datetime.timedelta(days=completed)
+        params['filter'] = 'completedAfter:' + str(since)
+
+    if incomplete:
+        params['filter'] = 'status:incompleted'
+
+    params['api_sig'] = make_api_sig(params)
+
+    r = requests.get(methods_url, params=params)
+    rtm_tasks = get_data_or_raise_exception(r)
+
+    tasks = []
+
+    if 'list' in rtm_tasks['tasks']:
+        # return list of Task objects
+        for rtm_list in rtm_tasks['tasks']['list']:
+            for taskseries in rtm_list['taskseries']:
+                tasks.append(Task(taskseries))
+    else:
+        raise NoTasksException
+
+    return tasks
 
 
 ################################################################################
@@ -245,47 +302,36 @@ def lists(archived, smart, all):
     else:
         for rtm_list in sorted(sub_list, key=lambda k: k['name'].lower()):
             click.echo(rtm_list['name'])
-
     return
 
 
 @main.command()
 @click.option('--list_name', '-l', default='', help="List name.")
-@click.option('--completed', '-c', is_flag=True, help="Completed tasks only.")
+@click.option('--completed', '-c', default=0, help="Completed tasks only. Defaults to tasks completed in the last 30 days.")
 @click.option('--incomplete', '-i', is_flag=True, help="Incomplete tasks only.")
-def export(list_name, completed, incomplete, days):
+def tasks(list_name, completed, incomplete):
+    """List tasks by various attributes."""
+    try:
+        tasks = get_tasks(list_name, completed, incomplete)
+    except NoTasksException:
+        click.secho("No tasks found with those parameters.", fg='red')
+        return
+
+    for task in tasks:
+        print(task.name, '(due:', task.due, ')')
+
+    return
+
+@main.command()
+@click.option('--list_name', '-l', default='', help="List name.")
+@click.option('--completed', '-c', default='', help="Completed tasks only. Defaults to tasks completed in the last 30 days.")
+@click.option('--incomplete', '-i', is_flag=True, help="Incomplete tasks only.")
+def export(list_name, completed, incomplete):
     """Export tasks to pdf."""
 
-    check_token()
-    params = {'api_key':API_KEY,
-              'method':'rtm.tasks.getList',
-              'format':'json',
-              'auth_token':settings['token']}
+    tasks = get_tasks(list_name, completed, incomplete)
 
-    if list_name:
-        lists = get_lists()
-
-        for rtm_list in lists:
-            if list_name == rtm_list['name']:
-                list_id = rtm_list['id']
-
-        if not list_id:
-            return "Sorry, list not found."
-
-        params['list_id'] = list_id
-
-
-    if days:
-        # figure out x days ago date
-        since = datetime.date.today() - datetime.timedelta(days=days)
-        params['filter'] = 'completedAfter:' + str(since)
-
-    params['api_sig'] = make_api_sig(params)
-
-    r = requests.get(methods_url, params=params)
-    tasks = get_data_or_raise_exception(r)['tasks']['list']
-
-    click.echo(tasks)
+    # for task in tasks:
 
 
 if __name__ == "__main__":
