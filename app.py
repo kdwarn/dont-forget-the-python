@@ -1,8 +1,8 @@
 '''
     TO DO:
-        - get 'due' and other tasks attributes properly. Might have to do another
-          loop through the tasks within taskseries
-        - for export(), --completed should include # days to go back for tasks
+        - order tasks retrieved by due date, no due date at end
+        - get tasks by tag
+        - get other task attributes (url, attachments, assigned, priority, ?)
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
 '''
@@ -34,21 +34,36 @@ except EOFError:
 
 class NoTasksException(Exception):
     pass
-    # click.secho("No tasks found with given parameters.", fg='red')
+
 
 ################################################################################
 # CLASSES
 ################################################################################
 class Task:
 
-    def __init__(self, taskseries):
+    def __init__(self, taskseries, task):
+        print(task)
         self.id = taskseries['id']
         self.name = taskseries['name']
+        self.url = taskseries['url'] if 'url' in taskseries else ''
+        self.due = task['due'] if 'due' in task else ''
+        self.priority = '' if task['priority'] == 'N' else task['priority']
 
-        if 'due' in taskseries['task']:
-            self.due = taskseries['task']['due']
-        else:
-            self.due = ''
+        self.tags = []
+        if 'tag' in taskseries['tags']:
+            for tag in taskseries['tags']['tag']:
+                self.tags.append(tag)
+
+        self.notes = []
+        if 'note' in taskseries['notes']:
+            for note in taskseries['notes']['note']:
+                self.notes.append(note['$t'])
+
+        self.participants = []
+        if 'contact' in taskseries['participants']:
+            for participant in taskseries['participants']['contact']:
+                self.participants.append(participant['fullname'])
+
 
 ################################################################################
 #  HELPER FUNCTIONS
@@ -68,6 +83,7 @@ def get_data_or_raise_exception(response):
         raise Exception('{}: {}'.format({data['err']['code']}, {data['err']['msg']}))
 
     return data
+
 
 def make_api_sig(params):
     '''
@@ -200,13 +216,12 @@ def get_lists():
     return get_data_or_raise_exception(r)['lists']['list']
 
 
-def get_tasks(list_name, completed, incomplete):
+def get_tasks(list_name, status):
     ''' Get user tasks, in list_name if given.
 
     Inputs:
         -list_name: name of list_name
-        -completed: integer of number of days in past to get tasks from
-        -incomplete: boolean
+        -status : completed or incomplete
     '''
 
     check_token()
@@ -227,12 +242,13 @@ def get_tasks(list_name, completed, incomplete):
 
         params['list_id'] = list_id
 
-    if completed:
+    if status == 'completed':
         # figure out x days ago date
-        since = datetime.date.today() - datetime.timedelta(days=completed)
-        params['filter'] = 'completedAfter:' + str(since)
+        #since = datetime.date.today() - datetime.timedelta(days=days)
+        #params['filter'] = 'completedAfter:' + str(since)
+        params['filter'] = 'status:completed'
 
-    if incomplete:
+    if status == 'incomplete':
         params['filter'] = 'status:incompleted'
 
     params['api_sig'] = make_api_sig(params)
@@ -243,10 +259,10 @@ def get_tasks(list_name, completed, incomplete):
     tasks = []
 
     if 'list' in rtm_tasks['tasks']:
-        # return list of Task objects
         for rtm_list in rtm_tasks['tasks']['list']:
             for taskseries in rtm_list['taskseries']:
-                tasks.append(Task(taskseries))
+                for task in taskseries['task']:
+                    tasks.append(Task(taskseries, task))
     else:
         raise NoTasksException
 
@@ -258,13 +274,14 @@ def get_tasks(list_name, completed, incomplete):
 ################################################################################
 @click.group()
 def main():
-    """Command line interface for Remember the Milk.
+    """Don't Forget the Python: command-line interface for Remember the Milk.
 
     Type "<command> --help" to see options and additional info."""
 
 
 @main.command()
-def test():
+def greet():
+    '''Hello.'''
     check_token()
     click.echo('Hello {}!'.format(settings['name']))
 
@@ -307,29 +324,54 @@ def lists(archived, smart, all):
 
 @main.command()
 @click.option('--list_name', '-l', default='', help="List name.")
-@click.option('--completed', '-c', default=0, help="Completed tasks only. Defaults to tasks completed in the last 30 days.")
-@click.option('--incomplete', '-i', is_flag=True, help="Incomplete tasks only.")
-def tasks(list_name, completed, incomplete):
-    """List tasks by various attributes."""
+@click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
+@click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
+#@click.option('--days', -'d', default=0, help="For completed tasks, number of days since completed.")
+@click.option('--verbose', '-v', is_flag=True, help="Include tags and notes.")
+def tasks(list_name, status, verbose):
+    """List your tasks."""
     try:
-        tasks = get_tasks(list_name, completed, incomplete)
+        tasks = get_tasks(list_name, status)
     except NoTasksException:
         click.secho("No tasks found with those parameters.", fg='red')
         return
 
     for task in tasks:
-        print(task.name, '(due:', task.due, ')')
+        print(task.name, end='')
+        if task.due:
+            print(' (due: ' + task.due +')')
+        else:
+            print('')
+        if verbose:
+            if task.tags:
+                print(' tags: ', end='')
+                for tag in task.tags:
+                    print(tag, end=', ')
+                print('')
+            if task.notes:
+                for note in task.notes:
+                    print(' note: ' + note)
+            if task.url:
+                print(' url: ' + task.url)
+            if task.priority:
+                print(' priority: ' + task.priority)
+            if task.participants:
+                for participant in task.participants:
+                    print(' participant: ' + participant)
+            print('')
 
     return
 
+
 @main.command()
 @click.option('--list_name', '-l', default='', help="List name.")
-@click.option('--completed', '-c', default='', help="Completed tasks only. Defaults to tasks completed in the last 30 days.")
-@click.option('--incomplete', '-i', is_flag=True, help="Incomplete tasks only.")
-def export(list_name, completed, incomplete):
+@click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
+@click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
+@click.option('--days', '-d', default=0, help="For completed tasks, number of days since completed.")
+def export(list_name, status):
     """Export tasks to pdf."""
 
-    tasks = get_tasks(list_name, completed, incomplete)
+    tasks = get_tasks(list_name, status)
 
     # for task in tasks:
 
