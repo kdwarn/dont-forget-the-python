@@ -2,7 +2,7 @@
     TO DO:
         - order tasks retrieved by due date, no due date at end
         - get tasks by tag
-        - get other task attributes (url, attachments, assigned, priority, ?)
+        - get other task attributes (attachments, assigned, ?)
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
 '''
