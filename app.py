@@ -1,18 +1,19 @@
+#!/python3
+
 '''
     TO DO:
         - order tasks retrieved by due date, no due date at end
-        - get tasks by tag
         - get other task attributes (attachments, assigned, ?)
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
 '''
 
+import sys
 import datetime
 import click
 import requests
 import hashlib
 import pickle
-from icecream import ic
 from config import API_KEY, SHARED_SECRET
 
 
@@ -32,7 +33,13 @@ except EOFError:
     settings = {}
 
 
+class BadResponseException(Exception):
+    pass
+
 class NoTasksException(Exception):
+    pass
+
+class NoListException(Exception):
     pass
 
 
@@ -42,7 +49,6 @@ class NoTasksException(Exception):
 class Task:
 
     def __init__(self, taskseries, task):
-        print(task)
         self.id = taskseries['id']
         self.name = taskseries['name']
         self.url = taskseries['url'] if 'url' in taskseries else ''
@@ -75,12 +81,15 @@ def save(settings):
         pickle.dump(settings, f)
 
 
-def get_data_or_raise_exception(response):
+def get_data_or_exit(response):
+    ''' Return response object or exit if response was failure.'''
+
     data = response.json()['rsp']
 
     if data['stat'] != 'ok':
-        click.echo("There's been an error.")
-        raise Exception('{}: {}'.format({data['err']['code']}, {data['err']['msg']}))
+        click.secho("An error occured while retrieving data from RTM. {}: {}" \
+                .format({data['err']['code']}, {data['err']['msg']}), fg='red')
+        sys.exit(1)
 
     return data
 
@@ -112,10 +121,9 @@ def get_frob():
     r = requests.get(methods_url, params=params)
 
     if r.status_code != 200:
-        raise Exception("Error ({}) connecting to Remember the Milk. Please "
-                        "try again later.".format(r.status_code))
-
-    data = get_data_or_raise_exception(r)
+        click.secho("Error ({}) connecting to Remember the Milk. Please " \
+                        "try again later.".format(r.status_code), fg='red')
+        sys.exit(1)
 
     return data['frob']
 
@@ -136,8 +144,9 @@ def authenticate():
     r = requests.get(auth_url, params=params)
 
     if r.status_code != 200:
-        raise Exception("Error ({}) connecting to Remember the Milk. Please "
-                        "try again later.".format(r.status_code))
+        click.secho("Error ({}) connecting to Remember the Milk. Please "
+                        "try again later.".format(r.status_code), fg='red')
+        sys.exit(1)
 
     click.echo('')
     click.echo('Open the following link in your browser in order to approve authentication '
@@ -160,7 +169,6 @@ def authenticate():
     r = requests.get(methods_url, params=params)
 
     r = r.json()['rsp']
-    #r_token.json()
     settings['token'] = r['auth']['token']
     settings['username'] = r['auth']['user']['username']
     settings['name'] = r['auth']['user']['fullname']
@@ -184,8 +192,9 @@ def check_token():
         r = requests.get(methods_url, params=params)
 
         if r.status_code != 200:
-            raise Exception("Error ({}) connecting to Remember the Milk. Please "
-                            "try again later.".format(r.status_code))
+            click.secho("Error ({}) connecting to Remember the Milk. Please "
+                            "try again later.".format(r.status_code), fg='red')
+            sys.exit(1)
 
         r = r.json()['rsp']
 
@@ -213,14 +222,16 @@ def get_lists():
     params['api_sig'] = make_api_sig(params)
 
     r = requests.get(methods_url, params=params)
-    return get_data_or_raise_exception(r)['lists']['list']
+
+    return get_data_or_exit(r)
 
 
-def get_tasks(list_name, status):
-    ''' Get user tasks, in list_name if given.
+def get_tasks(list_name='', tag='', status=''):
+    ''' Get user tasks by various attributes.
 
     Inputs:
         -list_name: name of list_name
+        -tag: name of tag
         -status : completed or incomplete
     '''
 
@@ -231,14 +242,15 @@ def get_tasks(list_name, status):
               'auth_token':settings['token']}
 
     if list_name:
-        lists = get_lists()
+        rtm_lists = get_lists()
 
-        for rtm_list in lists:
+        list_id = ''
+        for rtm_list in rtm_lists['lists']['list']:
             if list_name == rtm_list['name']:
                 list_id = rtm_list['id']
 
         if not list_id:
-            return "Sorry, list not found."
+            raise NoListException
 
         params['list_id'] = list_id
 
@@ -251,18 +263,30 @@ def get_tasks(list_name, status):
     if status == 'incomplete':
         params['filter'] = 'status:incompleted'
 
+    # if tag included, will have find tasks for that tag later because
+    # the query can take only one params['filter'] parameter
+
     params['api_sig'] = make_api_sig(params)
 
     r = requests.get(methods_url, params=params)
-    rtm_tasks = get_data_or_raise_exception(r)
-
+    rtm_tasks = get_data_or_exit(r)
     tasks = []
 
     if 'list' in rtm_tasks['tasks']:
         for rtm_list in rtm_tasks['tasks']['list']:
-            for taskseries in rtm_list['taskseries']:
-                for task in taskseries['task']:
-                    tasks.append(Task(taskseries, task))
+            if 'taskseries' in rtm_list:
+                for taskseries in rtm_list['taskseries']:
+                    if tag:
+                        if 'tag' in taskseries['tags']:
+                            for task in taskseries['task']:
+                                if tag in taskseries['tags']['tag']:
+                                    tasks.append(Task(taskseries, task))
+                    else:
+                        for task in taskseries['task']:
+                            tasks.append(Task(taskseries, task))
+        if not tasks:
+            raise NoTasksException
+
     else:
         raise NoTasksException
 
@@ -293,11 +317,11 @@ def greet():
 def lists(archived, smart, all):
     '''List your lists!'''
 
-    lists = get_lists()
+    rtm_lists = get_lists()
 
     sub_list = []
 
-    for rtm_list in lists:
+    for rtm_list in rtm_lists['lists']['list']:
         if all:
             sub_list.append(rtm_list)
         else:
@@ -323,17 +347,21 @@ def lists(archived, smart, all):
 
 
 @main.command()
-@click.option('--list_name', '-l', default='', help="List name.")
+@click.option('--list_name', '-l', default='', help="Tasks from a particular list.")
+@click.option('--tag', '-t', default='', help="Tasks with a particular tag.")
 @click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
 @click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
 #@click.option('--days', -'d', default=0, help="For completed tasks, number of days since completed.")
 @click.option('--verbose', '-v', is_flag=True, help="Include tags and notes.")
-def tasks(list_name, status, verbose):
+def tasks(list_name, tag, status, verbose):
     """List your tasks."""
     try:
-        tasks = get_tasks(list_name, status)
+        tasks = get_tasks(list_name, tag, status)
     except NoTasksException:
         click.secho("No tasks found with those parameters.", fg='red')
+        return
+    except NoListException:
+        click.secho('No list by that name found.', fg='red')
         return
 
     for task in tasks:
