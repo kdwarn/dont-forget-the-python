@@ -2,8 +2,10 @@
 
 '''
     TO DO:
+        - use click.secho() instead of print() in tasks()
         - order tasks retrieved by due date, no due date at end
         - get other task attributes (attachments, assigned, ?)
+        - get subtasks (recurvisely because subtasks can have subtasks)
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
 '''
@@ -223,7 +225,7 @@ def get_lists():
 
     r = requests.get(methods_url, params=params)
 
-    return get_data_or_exit(r)
+    return get_data_or_exit(r)['lists']['list']
 
 
 def get_tasks(list_name='', tag='', status=''):
@@ -245,7 +247,7 @@ def get_tasks(list_name='', tag='', status=''):
         rtm_lists = get_lists()
 
         list_id = ''
-        for rtm_list in rtm_lists['lists']['list']:
+        for rtm_list in rtm_lists:
             if list_name == rtm_list['name']:
                 list_id = rtm_list['id']
 
@@ -269,25 +271,25 @@ def get_tasks(list_name='', tag='', status=''):
     params['api_sig'] = make_api_sig(params)
 
     r = requests.get(methods_url, params=params)
-    rtm_tasks = get_data_or_exit(r)
+    rtm_tasks = get_data_or_exit(r)['tasks']
+
     tasks = []
 
-    if 'list' in rtm_tasks['tasks']:
-        for rtm_list in rtm_tasks['tasks']['list']:
-            if 'taskseries' in rtm_list:
-                for taskseries in rtm_list['taskseries']:
-                    if tag:
-                        if 'tag' in taskseries['tags']:
-                            for task in taskseries['task']:
-                                if tag in taskseries['tags']['tag']:
-                                    tasks.append(Task(taskseries, task))
-                    else:
-                        for task in taskseries['task']:
-                            tasks.append(Task(taskseries, task))
-        if not tasks:
-            raise NoTasksException
+    if 'list' not in rtm_tasks:
+        raise NoTasksException
 
-    else:
+    for rtm_list in rtm_tasks['list']:
+        if 'taskseries' in rtm_list:
+            for taskseries in rtm_list['taskseries']:
+                if tag:
+                    if 'tag' in taskseries['tags']:
+                        for task in taskseries['task']:
+                            if tag in taskseries['tags']['tag']:
+                                tasks.append(Task(taskseries, task))
+                else:
+                    for task in taskseries['task']:
+                        tasks.append(Task(taskseries, task))
+    if not tasks:
         raise NoTasksException
 
     return tasks
@@ -321,7 +323,7 @@ def lists(archived, smart, all):
 
     sub_list = []
 
-    for rtm_list in rtm_lists['lists']['list']:
+    for rtm_list in rtm_lists:
         if all:
             sub_list.append(rtm_list)
         else:
@@ -355,6 +357,7 @@ def lists(archived, smart, all):
 @click.option('--verbose', '-v', is_flag=True, help="Include tags and notes.")
 def tasks(list_name, tag, status, verbose):
     """List your tasks."""
+
     try:
         tasks = get_tasks(list_name, tag, status)
     except NoTasksException:
