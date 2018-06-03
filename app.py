@@ -6,6 +6,7 @@
         - order tasks retrieved by due date, no due date at end
         - get other task attributes (attachments, assigned, ?)
         - get subtasks (recurvisely because subtasks can have subtasks)
+        - testing
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
 '''
@@ -16,6 +17,13 @@ import click
 import requests
 import hashlib
 import pickle
+
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import inch
+
 from config import API_KEY, SHARED_SECRET
 
 
@@ -396,15 +404,42 @@ def tasks(list_name, tag, status, verbose):
 
 @main.command()
 @click.option('--list_name', '-l', default='', help="List name.")
+@click.option('--tag', '-t', default='', help="Tasks with a particular tag.")
 @click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
 @click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
-@click.option('--days', '-d', default=0, help="For completed tasks, number of days since completed.")
-def export(list_name, status):
+@click.option('--filename', '-f', default='remember the milk tasks', help="Name of file to create.")
+# @click.option('--days', '-d', default=0, help="For completed tasks, number of days since completed.")
+def export(list_name, tag, status, filename):
     """Export tasks to pdf."""
 
-    tasks = get_tasks(list_name, status)
+    # http://www.blog.pythonlibrary.org/2010/03/08/a-simple-step-by-step-reportlab-tutorial/
 
-    # for task in tasks:
+    try:
+        tasks = get_tasks(list_name, tag, status)
+    except NoTasksException:
+        click.secho("No tasks found with those parameters.", fg='red')
+        return
+    except NoListException:
+        click.secho('No list by that name found.', fg='red')
+        return
+
+    doc = SimpleDocTemplate(filename+'.pdf', pagesize=letter)
+    styles=getSampleStyleSheet()
+    story=[]
+
+    if list_name:
+        story.append(Paragraph(list_name + ' - ' + str(len(tasks)) + ' tasks', styles['Normal']))
+        story.append(Spacer(1, 12))
+    else:
+        story.append(Paragraph(str(len(tasks)) + ' tasks', styles["Normal"]))
+        story.append(Spacer(1, 12))
+
+    for task in tasks:
+        story.append(Paragraph(u'\u2022' + '  ' + task.name, styles["Normal"]))
+
+    doc.build(story)
+
+    return
 
 
 if __name__ == "__main__":
