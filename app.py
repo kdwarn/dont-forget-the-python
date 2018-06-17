@@ -97,8 +97,9 @@ def get_data_or_exit(response):
     data = response.json()['rsp']
 
     if data['stat'] != 'ok':
-        click.secho("An error occured while retrieving data from RTM. {}: {}" \
-                .format({data['err']['code']}, {data['err']['msg']}), fg='red')
+        click.secho('An error occurred while retrieving data from RTM: {}: {} '
+                'Did you follow follow the link?'.format(data['err']['code'],
+                data['err']['msg']), fg='red')
         sys.exit(1)
 
     return data
@@ -135,6 +136,8 @@ def get_frob():
                         "try again later.".format(r.status_code), fg='red')
         sys.exit(1)
 
+    data = get_data_or_exit(r)
+
     return data['frob']
 
 
@@ -165,7 +168,7 @@ def authenticate():
     click.echo(r.url)
 
     # pause the application while the user approves authentication
-    value = click.prompt('Type "c" and then press enter to continue.')
+    value = click.prompt('Press any key and then press enter to continue.')
 
     # now get the authentication token
     params = {'api_key':API_KEY,
@@ -178,10 +181,17 @@ def authenticate():
 
     r = requests.get(methods_url, params=params)
 
-    r = r.json()['rsp']
-    settings['token'] = r['auth']['token']
-    settings['username'] = r['auth']['user']['username']
-    settings['name'] = r['auth']['user']['fullname']
+    if r.status_code != 200:
+        click.secho("Error ({}) authenticating. Please " \
+                        "try again later.".format(r.status_code), fg='red')
+        sys.exit(1)
+
+    data = get_data_or_exit(r)
+
+    settings['token'] = data['auth']['token']
+    settings['username'] = data['auth']['user']['username']
+    settings['name'] = data['auth']['user']['fullname']
+
     save(settings)
 
     click.echo('Congrats, {}, it worked!'.format(settings['name']))
@@ -209,8 +219,8 @@ def check_token():
         r = r.json()['rsp']
 
         if r['stat'] != 'ok':
-            click.echo("There's been an error.")
-            click.echo('{}: {}'.format({r['err']['code']}, {r['err']['msg']}))
+            click.secho("There's been an error.", fg='red')
+            click.echo('{}: {}'.format(r['err']['code'], r['err']['msg']))
             click.echo('Attempting to reauthenticate...')
             authenticate()
 
