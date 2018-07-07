@@ -1,7 +1,12 @@
-#!/python3
+#!python3
 
 '''
     TO DO:
+        - testing failures of API calls
+        - adjust authenticate() to have reauthenticate scenario
+        - user.pickle gets saved (and I assume so does the exported file) in
+          whatever directory the user runs the command from. Need to make it
+          a specific file, probably hidden file under user home directory.
         - use click.secho() instead of print() in tasks()
         - order tasks retrieved by due date, no due date at end
         - get other task attributes (attachments, assigned, ?)
@@ -9,6 +14,8 @@
         - testing
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
+        - once Pillow is available for Python 3.7, upgrade to 3.7 and delete/re-install
+          the virtual environment. That will enable me to make Task a dataclass.
 '''
 
 import sys
@@ -16,7 +23,10 @@ import datetime
 import click
 import requests
 import hashlib
+import textwrap
 import pickle
+
+from tabulate import tabulate
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
@@ -43,7 +53,7 @@ except EOFError:
     settings = {}
 
 
-class BadResponseException(Exception):
+class BadDataException(Exception):
     pass
 
 class NoTasksException(Exception):
@@ -80,6 +90,10 @@ class Task:
             for participant in taskseries['participants']['contact']:
                 self.participants.append(participant['fullname'])
 
+    def convert_to_list(self):
+        ''' Returns Task as list, with task name text wrapped.'''
+        return ['\n'.join(textwrap.wrap(self.name, 50)), self.due]
+
 
 ################################################################################
 #  HELPER FUNCTIONS
@@ -91,18 +105,28 @@ def save(settings):
         pickle.dump(settings, f)
 
 
-def get_data_or_exit(response):
-    ''' Return response object or exit if response was failure.'''
+def handle_response(r):
+    ''' Deal with common responses from RTM API.
+    This is where a user will first be authenticated (or reauthenticated if the
+    authorization token expires).
+    '''
 
-    data = response.json()['rsp']
-
-    if data['stat'] != 'ok':
-        click.secho('An error occurred while retrieving data from RTM: {}: {} '
-                'Did you follow follow the link?'.format(data['err']['code'],
-                data['err']['msg']), fg='red')
+    if r.status_code != 200:
+        click.secho("Error ({}:{}) connecting to Remember the Milk. Please " \
+                    "try again later.".format(r.status_code, r.reason), fg='red')
         sys.exit(1)
+    else:
+        data = r.json()['rsp']
 
-    return data
+        if data['stat'] != 'ok':
+            if data['err']['code'] == '98':  # Login failed / Invalid auth token
+                authenticate()
+                sys.exit(1)
+            else:
+                click.secho("Error: {}{}.".format(data['err']['code'], data['err']['msg']))
+                sys.exit(1)
+
+        return data
 
 
 def make_api_sig(params):
@@ -126,17 +150,11 @@ def get_frob():
     params = {'method':'rtm.auth.getFrob',
               'api_key':API_KEY,
               'format':'json'}
+
     # create signature from existing params and add as parameter
     params['api_sig'] = make_api_sig(params)
 
-    r = requests.get(methods_url, params=params)
-
-    if r.status_code != 200:
-        click.secho("Error ({}) connecting to Remember the Milk. Please " \
-                        "try again later.".format(r.status_code), fg='red')
-        sys.exit(1)
-
-    data = get_data_or_exit(r)
+    data = handle_response(requests.get(methods_url, params=params))
 
     return data['frob']
 
@@ -157,15 +175,16 @@ def authenticate():
     r = requests.get(auth_url, params=params)
 
     if r.status_code != 200:
-        click.secho("Error ({}) connecting to Remember the Milk. Please "
-                        "try again later.".format(r.status_code), fg='red')
+        click.secho("Error ({}:{}) connecting to Remember the Milk. Please "
+                        "try again later.".format(r.status_code, r.reason), fg='red')
         sys.exit(1)
 
     click.echo('')
-    click.echo('Open the following link in your browser in order to approve authentication '
-        'from Remember the Milk:')
+    click.echo('Please open the following link in your browser in order to '
+               'approve authentication from Remember the Milk:')
     click.echo('')
     click.echo(r.url)
+    click.echo('')
 
     # pause the application while the user approves authentication
     value = click.prompt('Press any key and then press enter to continue.')
@@ -179,53 +198,22 @@ def authenticate():
     # sign every request
     params['api_sig'] = make_api_sig(params)
 
-    r = requests.get(methods_url, params=params)
+    auth_r = requests.get(methods_url, params=params)
 
-    if r.status_code != 200:
-        click.secho("Error ({}) authenticating. Please " \
-                        "try again later.".format(r.status_code), fg='red')
+    if auth_r.status_code != 200:
+        click.secho("Error ({}:{}) connecting to Remember the Milk. Please " \
+                    "try again later.".format(auth_r.status_code, auth_r.reason), fg='red')
         sys.exit(1)
-
-    data = get_data_or_exit(r)
+    else:
+        data = auth_r.json()['rsp']
 
     settings['token'] = data['auth']['token']
     settings['username'] = data['auth']['user']['username']
     settings['name'] = data['auth']['user']['fullname']
 
     save(settings)
-
-    click.echo('Congrats, {}, it worked!'.format(settings['name']))
-
-    return
-
-
-def check_token():
-    ''' Check user token. Do nothing, refresh token, or authenticate. '''
-
-    if 'token' in settings:
-        params = {'api_key':API_KEY,
-                  'method': 'rtm.auth.checkToken',
-                  'format':'json',
-                  'auth_token':settings['token']}
-        params['api_sig'] = make_api_sig(params)
-
-        r = requests.get(methods_url, params=params)
-
-        if r.status_code != 200:
-            click.secho("Error ({}) connecting to Remember the Milk. Please "
-                            "try again later.".format(r.status_code), fg='red')
-            sys.exit(1)
-
-        r = r.json()['rsp']
-
-        if r['stat'] != 'ok':
-            click.secho("There's been an error.", fg='red')
-            click.echo('{}: {}'.format(r['err']['code'], r['err']['msg']))
-            click.echo('Attempting to reauthenticate...')
-            authenticate()
-
-    else:
-        authenticate()
+    click.echo('')
+    click.echo('Congrats, {}, your account is authenticated!'.format(settings['name']))
 
     return
 
@@ -233,7 +221,6 @@ def check_token():
 def get_lists():
     """ Get all of the user's lists."""
 
-    check_token()
     params = {'api_key':API_KEY,
               'method':'rtm.lists.getList',
               'format':'json',
@@ -241,9 +228,9 @@ def get_lists():
 
     params['api_sig'] = make_api_sig(params)
 
-    r = requests.get(methods_url, params=params)
+    data = handle_response(requests.get(methods_url, params=params))
 
-    return get_data_or_exit(r)['lists']['list']
+    return data['lists']['list']
 
 
 def get_tasks(list_name='', tag='', status=''):
@@ -255,7 +242,6 @@ def get_tasks(list_name='', tag='', status=''):
         -status : completed or incomplete
     '''
 
-    check_token()
     params = {'api_key':API_KEY,
               'method':'rtm.tasks.getList',
               'format':'json',
@@ -288,8 +274,8 @@ def get_tasks(list_name='', tag='', status=''):
 
     params['api_sig'] = make_api_sig(params)
 
-    r = requests.get(methods_url, params=params)
-    rtm_tasks = get_data_or_exit(r)['tasks']
+    data = handle_response(requests.get(methods_url, params=params))
+    rtm_tasks = data['tasks']
 
     tasks = []
 
@@ -321,13 +307,6 @@ def main():
     """Don't Forget the Python: command-line interface for Remember the Milk.
 
     Type "<command> --help" to see options and additional info."""
-
-
-@main.command()
-def greet():
-    '''Hello.'''
-    check_token()
-    click.echo('Hello {}!'.format(settings['name']))
 
 
 @main.command()
@@ -385,29 +364,36 @@ def tasks(list_name, tag, status, verbose):
         click.secho('No list by that name found.', fg='red')
         return
 
+    list_of_tasks = []
+
     for task in tasks:
-        print(task.name, end='')
-        if task.due:
-            print(' (due: ' + task.due +')')
-        else:
-            print('')
-        if verbose:
-            if task.tags:
-                print(' tags: ', end='')
-                for tag in task.tags:
-                    print(tag, end=', ')
-                print('')
-            if task.notes:
-                for note in task.notes:
-                    print(' note: ' + note)
-            if task.url:
-                print(' url: ' + task.url)
-            if task.priority:
-                print(' priority: ' + task.priority)
-            if task.participants:
-                for participant in task.participants:
-                    print(' participant: ' + participant)
-            print('')
+        list_of_tasks.append(task.convert_to_list())
+
+    return print(tabulate(list_of_tasks, headers=['Task', 'Due'], tablefmt="fancy_grid"))
+
+    # for task in tasks:
+    #     print(task.name, end='')
+    #     if task.due:
+    #         print(' (due: ' + task.due +')')
+    #     else:
+    #         print('')
+    #     if verbose:
+    #         if task.tags:
+    #             print(' tags: ', end='')
+    #             for tag in task.tags:
+    #                 print(tag, end=', ')
+    #             print('')
+    #         if task.notes:
+    #             for note in task.notes:
+    #                 print(' note: ' + note)
+    #         if task.url:
+    #             print(' url: ' + task.url)
+    #         if task.priority:
+    #             print(' priority: ' + task.priority)
+    #         if task.participants:
+    #             for participant in task.participants:
+    #                 print(' participant: ' + participant)
+    #         print('')
 
     return
 
