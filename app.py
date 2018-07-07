@@ -172,18 +172,18 @@ def authenticate():
               'perms':'read'}
     params['api_sig'] = make_api_sig(params)
 
-    r = requests.get(auth_url, params=params)
+    r_auth = requests.get(auth_url, params=params)
 
-    if r.status_code != 200:
+    if r_auth.status_code != 200:
         click.secho("Error ({}:{}) connecting to Remember the Milk. Please "
-                        "try again later.".format(r.status_code, r.reason), fg='red')
+                        "try again later.".format(r_auth.status_code, r_auth.reason), fg='red')
         sys.exit(1)
 
     click.echo('')
     click.echo('Please open the following link in your browser in order to '
                'approve authentication from Remember the Milk:')
     click.echo('')
-    click.echo(r.url)
+    click.echo(r_auth.url)
     click.echo('')
 
     # pause the application while the user approves authentication
@@ -198,14 +198,14 @@ def authenticate():
     # sign every request
     params['api_sig'] = make_api_sig(params)
 
-    auth_r = requests.get(methods_url, params=params)
+    token_r = requests.get(methods_url, params=params)
 
-    if auth_r.status_code != 200:
+    if token_r.status_code != 200:
         click.secho("Error ({}:{}) connecting to Remember the Milk. Please " \
-                    "try again later.".format(auth_r.status_code, auth_r.reason), fg='red')
+                    "try again later.".format(token_r.status_code, token_r.reason), fg='red')
         sys.exit(1)
     else:
-        data = auth_r.json()['rsp']
+        data = token_r.json()['rsp']
 
     settings['token'] = data['auth']['token']
     settings['username'] = data['auth']['user']['username']
