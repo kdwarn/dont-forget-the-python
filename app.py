@@ -2,7 +2,8 @@
 
 '''
     TO DO:
-        - now: format date in display_tasks()
+        - if due date in past, make red
+        - verbose output from tasks() and export()
         - continue to develop tests (most immediately for display_tasks())
         - adjust authenticate() to have reauthenticate scenario
         - user.pickle gets saved (and I assume so does the exported file) in
@@ -24,6 +25,8 @@ import requests
 import hashlib
 import textwrap
 import pickle
+
+import arrow
 
 from tabulate import tabulate
 
@@ -94,20 +97,17 @@ class Task:
     def convert_to_list(self):
         ''' Returns Task as list, with task name text wrapped.'''
         if self.completed:
+            self.completed = convert_date(self.completed)
             return ['\n'.join(textwrap.wrap(self.name, 50)), self.completed]
         else:
+            if self.due != 'never':
+                self.due = convert_date(self.due)
             return ['\n'.join(textwrap.wrap(self.name, 50)), self.due]
 
 
 ################################################################################
-#  HELPER FUNCTIONS
+# API AUTHORIZATION FUNCTIONS
 ################################################################################
-def save(settings):
-    ''' Save user settings to file. '''
-
-    with open(user_settings, 'wb') as f:
-        pickle.dump(settings, f)
-
 
 def handle_response(r):
     ''' Deal with common responses from RTM API.
@@ -164,7 +164,7 @@ def get_frob():
 
 def authenticate():
     '''
-    Authenticates user to RTM and stores token to *user_settings* file.
+    Authenticates user to RTM and stores token and other settings to *user_settings* file.
 
     See https://www.rememberthemilk.com/services/api/authentication.rtm.
     '''
@@ -214,11 +214,56 @@ def authenticate():
     settings['username'] = data['auth']['user']['username']
     settings['name'] = data['auth']['user']['fullname']
 
+    additional_rtm_settings = get_rtm_settings()
+
+    settings['timezone'] = additional_rtm_settings['timezone']
+    settings['dateformat'] = additional_rtm_settings['dateformat']
+    settings['timeformat'] = additional_rtm_settings['timeformat']
+
     save(settings)
+
     click.echo('')
     click.echo('Congrats, {}, your account is authenticated!'.format(settings['name']))
 
     return
+
+
+def get_rtm_settings():
+    ''' Get additional RTM settings. '''
+
+    params = {'api_key':API_KEY,
+              'method':'rtm.settings.getList',
+              'format':'json',
+              'auth_token':settings['token']}
+
+    params['api_sig'] = make_api_sig(params)
+
+    data = handle_response(requests.get(methods_url, params=params))
+
+    return data['settings']
+
+
+################################################################################
+#  HELPER FUNCTIONS
+################################################################################
+
+def save(settings):
+    ''' Save user settings to file. '''
+
+    with open(user_settings, 'wb') as f:
+        pickle.dump(settings, f)
+
+
+def convert_date(task_date):
+    # convert to arrow object and user's timezone
+    task_date = arrow.get(task_date).to(settings['timezone'])
+
+    # RTM stores tasks with no due time as midnight, so if that is the case,
+    # only display date, otherwise full date/time
+    if str(task_date.time()) == '00:00:00':
+        return task_date.format('MMMM D, YYYY')
+    else:
+        return task_date.format('MMMM D, YYYY h:mm a')
 
 
 def get_lists():
@@ -349,8 +394,6 @@ def display_tasks(list_name, tasks, status, command, filename=''):
                                   ('BOX', (0,0), (-1,-1), 1.25, colors.black),
                                  ])
         story = []
-
-
 
     if status and status == 'incomplete':
         heading1 += str(len(tasks)) + ' incomplete tasks'
