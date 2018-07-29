@@ -2,16 +2,15 @@
 
 '''
     TO DO:
-        - testing failures of API calls
+        - now: format date in display_tasks()
+        - continue to develop tests (most immediately for display_tasks())
         - adjust authenticate() to have reauthenticate scenario
         - user.pickle gets saved (and I assume so does the exported file) in
           whatever directory the user runs the command from. Need to make it
           a specific file, probably hidden file under user home directory.
         - use click.secho() instead of print() in tasks()
-        - order tasks retrieved by due date, no due date at end
         - get other task attributes (attachments, assigned, ?)
         - get subtasks (recurvisely because subtasks can have subtasks)
-        - testing
         - I'm not sure if I have to do the full authentication thing if a token
           expires or if there's a simple token refresh process
         - once Pillow is available for Python 3.7, upgrade to 3.7 and delete/re-install
@@ -30,9 +29,10 @@ from tabulate import tabulate
 
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.lib import colors
 
 from config import API_KEY, SHARED_SECRET
 
@@ -71,8 +71,9 @@ class Task:
     def __init__(self, taskseries, task):
         self.id = taskseries['id']
         self.name = taskseries['name']
-        self.url = taskseries['url'] if 'url' in taskseries else ''
-        self.due = task['due'] if 'due' in task else ''
+        self.url = '' if not taskseries['url'] else taskseries['url']
+        self.due = 'never' if not task['due'] else task['due']
+        self.completed = task['completed']
         self.priority = '' if task['priority'] == 'N' else task['priority']
 
         self.tags = []
@@ -92,7 +93,10 @@ class Task:
 
     def convert_to_list(self):
         ''' Returns Task as list, with task name text wrapped.'''
-        return ['\n'.join(textwrap.wrap(self.name, 50)), self.due]
+        if self.completed:
+            return ['\n'.join(textwrap.wrap(self.name, 50)), self.completed]
+        else:
+            return ['\n'.join(textwrap.wrap(self.name, 50)), self.due]
 
 
 ################################################################################
@@ -114,17 +118,16 @@ def handle_response(r):
     if r.status_code != 200:
         click.secho("Error ({}:{}) connecting to Remember the Milk. Please " \
                     "try again later.".format(r.status_code, r.reason), fg='red')
-        sys.exit(1)
+        sys.exit('Bad Status Code')
     else:
         data = r.json()['rsp']
 
         if data['stat'] != 'ok':
             if data['err']['code'] == '98':  # Login failed / Invalid auth token
-                authenticate()
-                sys.exit(1)
+                return authenticate()
             else:
                 click.secho("Error: {}{}.".format(data['err']['code'], data['err']['msg']))
-                sys.exit(1)
+                sys.exit('Unexpected Error {} occurred.'.format(data['err']['code']))
 
         return data
 
@@ -234,12 +237,12 @@ def get_lists():
 
 
 def get_tasks(list_name='', tag='', status=''):
-    ''' Get user tasks by various attributes.
+    ''' Return list of Task objects by by various attributes.
 
     Inputs:
         -list_name: name of list_name
         -tag: name of tag
-        -status : completed or incomplete
+        -status: completed or incomplete
     '''
 
     params = {'api_key':API_KEY,
@@ -297,6 +300,131 @@ def get_tasks(list_name='', tag='', status=''):
         raise NoTasksException
 
     return tasks
+
+
+def split_tasks(tasks):
+    '''
+    Take all tasks and return two lists - one of completed tasks and one
+    of incomplete tasks, sorted by either completed date or due date.
+    '''
+
+    completed_tasks = []
+    incomplete_tasks = []
+
+    for task in tasks:
+        if not task.completed:
+            incomplete_tasks.append(task)
+        else:
+            completed_tasks.append(task)
+
+    if completed_tasks:
+        completed_tasks.sort(key=lambda t: t.completed)
+    if incomplete_tasks:
+        incomplete_tasks.sort(key=lambda t: t.due)
+
+    return completed_tasks, incomplete_tasks
+
+
+def display_tasks(list_name, tasks, status, command, filename=''):
+    ''' Display tasks either in terminal or as pdf. '''
+
+    completed_tasks = []
+    incomplete_tasks = []
+
+    tasks_as_lists = []
+    completed_tasks_as_lists = []
+    incomplete_tasks_as_lists = []
+
+    # include list name in heading if getting tasks from particular list
+    if list_name:
+        heading1 = list_name + ' - '
+    else:
+        heading1 = ''
+
+    # set up pdf
+    if command == 'export':
+        doc = SimpleDocTemplate(filename+'.pdf', pagesize=letter)
+        styles=getSampleStyleSheet()
+        table_style = TableStyle([('INNERGRID', (0,0), (-1,-1), 0.25, colors.black),
+                                  ('BOX', (0,0), (-1,-1), 1.25, colors.black),
+                                 ])
+        story = []
+
+
+
+    if status and status == 'incomplete':
+        heading1 += str(len(tasks)) + ' incomplete tasks'
+        tasks.sort(key=lambda t: t.due)  # sort by due date
+        incomplete_tasks_as_lists.append(['Task', 'Due'])
+
+        for task in tasks:
+            incomplete_tasks_as_lists.append(task.convert_to_list())
+
+        if command == 'export':
+            story.append(Paragraph(heading1, styles['Heading1']))
+            t = Table(incomplete_tasks_as_lists)
+            t.setStyle(table_style)
+            story.append(t)
+        elif command == 'tasks':
+            print(tabulate(incomplete_tasks_as_lists, headers="firstrow", tablefmt="fancy_grid"))
+
+    elif status and status == 'completed':
+        heading1 += str(len(tasks)) + ' completed tasks'
+        tasks.sort(key=lambda t: t.completed)  # sort by completed date
+        completed_tasks_as_lists.append(['Task', 'Completed'])
+
+        for task in tasks:
+            completed_tasks_as_lists.append(task.convert_to_list())
+
+        if command == 'export':
+            story.append(Paragraph(heading1, styles['Heading1']))
+            t = Table(completed_tasks_as_lists)
+            t.setStyle(table_style)
+            story.append(t)
+        if command == 'tasks':
+            print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
+
+    else:
+        # page header
+        heading1 += str(len(tasks)) + ' tasks'
+
+        # table headers
+        completed_tasks_as_lists.append(['Task', 'Completed'])
+        incomplete_tasks_as_lists.append(['Task', 'Due'])
+
+        # create separate lists for completed and incomplete tasks
+        completed_tasks, incomplete_tasks = split_tasks(tasks)
+        completed_tasks.sort(key=lambda t: t.completed)  # sort by completed date
+        incomplete_tasks.sort(key=lambda t: t.due)  # sort by due date
+
+        # convert from Task objects to lists
+        for task in completed_tasks:
+            completed_tasks_as_lists.append(task.convert_to_list())
+        for task in incomplete_tasks:
+            incomplete_tasks_as_lists.append(task.convert_to_list())
+
+        # export to pdf
+        if command == 'export':
+            story.append(Paragraph(heading1, styles['Heading1']))
+            story.append(Paragraph(str(len(completed_tasks)) + ' completed tasks', styles['Heading2']))
+            t = Table(completed_tasks_as_lists)
+            t.setStyle(table_style)
+            story.append(t)
+
+            story.append(Paragraph(str(len(incomplete_tasks)) + ' incomplete tasks', styles['Heading2']))
+            t = Table(incomplete_tasks_as_lists)
+            t.setStyle(table_style)
+            story.append(t)
+
+        # display in terminal
+        elif command == 'tasks':
+            print(tabulate(incomplete_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
+            print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
+
+    if command == 'export':
+        doc.build(story)
+
+    return
 
 
 ################################################################################
@@ -364,13 +492,10 @@ def tasks(list_name, tag, status, verbose):
         click.secho('No list by that name found.', fg='red')
         return
 
-    list_of_tasks = []
+    return display_tasks(list_name, tasks, status, 'tasks')
 
-    for task in tasks:
-        list_of_tasks.append(task.convert_to_list())
 
-    return print(tabulate(list_of_tasks, headers=['Task', 'Due'], tablefmt="fancy_grid"))
-
+    # this was the verbose version
     # for task in tasks:
     #     print(task.name, end='')
     #     if task.due:
@@ -395,8 +520,6 @@ def tasks(list_name, tag, status, verbose):
     #                 print(' participant: ' + participant)
     #         print('')
 
-    return
-
 
 @main.command()
 @click.option('--list_name', '-l', default='', help="List name.")
@@ -408,8 +531,6 @@ def tasks(list_name, tag, status, verbose):
 def export(list_name, tag, status, filename):
     """Export tasks to pdf."""
 
-    # http://www.blog.pythonlibrary.org/2010/03/08/a-simple-step-by-step-reportlab-tutorial/
-
     try:
         tasks = get_tasks(list_name, tag, status)
     except NoTasksException:
@@ -419,23 +540,7 @@ def export(list_name, tag, status, filename):
         click.secho('No list by that name found.', fg='red')
         return
 
-    doc = SimpleDocTemplate(filename+'.pdf', pagesize=letter)
-    styles=getSampleStyleSheet()
-    story=[]
-
-    if list_name:
-        story.append(Paragraph(list_name + ' - ' + str(len(tasks)) + ' tasks', styles['Normal']))
-        story.append(Spacer(1, 12))
-    else:
-        story.append(Paragraph(str(len(tasks)) + ' tasks', styles["Normal"]))
-        story.append(Spacer(1, 12))
-
-    for task in tasks:
-        story.append(Paragraph(u'\u2022' + '  ' + task.name, styles["Normal"]))
-
-    doc.build(story)
-
-    return
+    return display_tasks(list_name, tasks, status, 'export', filename)
 
 
 if __name__ == "__main__":
