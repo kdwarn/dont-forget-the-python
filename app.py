@@ -2,14 +2,14 @@
 
 '''
     TO DO:
-        - if due date in past, make red
+        - if due date/time in past, make red
+            - terminal display done; still need to do for exported pdf
         - verbose output from tasks() and export()
         - continue to develop tests (most immediately for display_tasks())
         - adjust authenticate() to have reauthenticate scenario
         - user.pickle gets saved (and I assume so does the exported file) in
           whatever directory the user runs the command from. Need to make it
           a specific file, probably hidden file under user home directory.
-        - use click.secho() instead of print() in tasks()
         - get other task attributes (attachments, assigned, ?)
         - get subtasks (recurvisely because subtasks can have subtasks)
         - I'm not sure if I have to do the full authentication thing if a token
@@ -75,8 +75,25 @@ class Task:
         self.id = taskseries['id']
         self.name = taskseries['name']
         self.url = '' if not taskseries['url'] else taskseries['url']
-        self.due = 'never' if not task['due'] else task['due']
-        self.completed = task['completed']
+
+        # keep due and completed times as strings in order to enable easy sorting later
+        self.due = 'never' if not task['due'] else task['due']  # iso format, utc
+        self.completed = task['completed']  # iso format, utc
+
+        # but use arrow objects in order to determine overdue tasks
+        self.is_overdue = False
+        if self.due != 'never':
+            task_due = arrow.get(task['due']).to(settings['timezone'])
+
+            # if it's due at midnight, it's due sometime that day, so don't
+            # make it overdue unless date (not time) is past
+            if str(task_due.time()) == '00:00:00':
+                if task_due.date() < arrow.get().to(settings['timezone']).date():
+                    self.is_overdue = True
+            else:
+                if task_due < arrow.get(tzinfo=settings['timezone']):
+                    self.is_overdue = True
+
         self.priority = '' if task['priority'] == 'N' else task['priority']
 
         self.tags = []
@@ -93,17 +110,6 @@ class Task:
         if 'contact' in taskseries['participants']:
             for participant in taskseries['participants']['contact']:
                 self.participants.append(participant['fullname'])
-
-    def convert_to_list(self):
-        ''' Returns Task as list, with task name text wrapped.'''
-        if self.completed:
-            self.completed = convert_date(self.completed)
-            return ['\n'.join(textwrap.wrap(self.name, 50)), self.completed]
-        else:
-            if self.due != 'never':
-                self.due = convert_date(self.due)
-            return ['\n'.join(textwrap.wrap(self.name, 50)), self.due]
-
 
 ################################################################################
 # API AUTHORIZATION FUNCTIONS
@@ -254,18 +260,6 @@ def save(settings):
         pickle.dump(settings, f)
 
 
-def convert_date(task_date):
-    # convert to arrow object and user's timezone
-    task_date = arrow.get(task_date).to(settings['timezone'])
-
-    # RTM stores tasks with no due time as midnight, so if that is the case,
-    # only display date, otherwise full date/time
-    if str(task_date.time()) == '00:00:00':
-        return task_date.format('MMMM D, YYYY')
-    else:
-        return task_date.format('MMMM D, YYYY h:mm a')
-
-
 def get_lists():
     """ Get all of the user's lists."""
 
@@ -347,16 +341,16 @@ def get_tasks(list_name='', tag='', status=''):
     return tasks
 
 
-def split_tasks(tasks):
+def split_list(all_tasks):
     '''
-    Take all tasks and return two lists - one of completed tasks and one
+    Split list of all tasks into two lists - one of completed tasks and one
     of incomplete tasks, sorted by either completed date or due date.
     '''
 
     completed_tasks = []
     incomplete_tasks = []
 
-    for task in tasks:
+    for task in all_tasks:
         if not task.completed:
             incomplete_tasks.append(task)
         else:
@@ -370,19 +364,40 @@ def split_tasks(tasks):
     return completed_tasks, incomplete_tasks
 
 
-def display_tasks(list_name, tasks, status, command, filename=''):
+def format_date(task_date):
+    # convert to arrow object and user's timezone
+    if task_date != 'never':
+        task_date = arrow.get(task_date).to(settings['timezone'])
+
+        # RTM stores tasks with no due time as midnight, so if that is the case,
+        # only display date, otherwise full date/time
+        if str(task_date.time()) == '00:00:00':
+            return task_date.format('MMM D, YYYY')
+        else:
+            return task_date.format('MMM D, YYYY h:mm a')
+    else:
+        return task_date
+
+
+def convert_to_list(task_name, task_date):
+    ''' Returns Task as list, with task name text wrapped.'''
+    return ['\n'.join(textwrap.wrap(task_name, 50)), task_date]
+
+
+def display_tasks(list_name, tag, tasks, status, command, filename=''):
     ''' Display tasks either in terminal or as pdf. '''
 
-    completed_tasks = []
-    incomplete_tasks = []
-
     tasks_as_lists = []
-    completed_tasks_as_lists = []
-    incomplete_tasks_as_lists = []
 
-    # include list name in heading if getting tasks from particular list
+    # set up lists of task info that will be displayed, table headers
+    completed_tasks_as_lists = [['Task', 'Completed']]
+    incomplete_tasks_as_lists = [['Task', 'Due']]
+
+    # include list name in page heading if getting tasks from particular list
     if list_name:
         heading1 = list_name + ' - '
+    elif tag:
+        heading1 = tag + ' - '
     else:
         heading1 = ''
 
@@ -398,10 +413,13 @@ def display_tasks(list_name, tasks, status, command, filename=''):
     if status and status == 'incomplete':
         heading1 += str(len(tasks)) + ' incomplete tasks'
         tasks.sort(key=lambda t: t.due)  # sort by due date
-        incomplete_tasks_as_lists.append(['Task', 'Due'])
 
         for task in tasks:
-            incomplete_tasks_as_lists.append(task.convert_to_list())
+            formatted_date = format_date(task.due)
+            if command == 'tasks':
+                if task.is_overdue:
+                    formatted_date = click.style(formatted_date, fg='red')
+            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date))
 
         if command == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
@@ -414,10 +432,10 @@ def display_tasks(list_name, tasks, status, command, filename=''):
     elif status and status == 'completed':
         heading1 += str(len(tasks)) + ' completed tasks'
         tasks.sort(key=lambda t: t.completed)  # sort by completed date
-        completed_tasks_as_lists.append(['Task', 'Completed'])
 
         for task in tasks:
-            completed_tasks_as_lists.append(task.convert_to_list())
+            task.completed = format_date(task.completed)
+            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed))
 
         if command == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
@@ -431,22 +449,23 @@ def display_tasks(list_name, tasks, status, command, filename=''):
         # page header
         heading1 += str(len(tasks)) + ' tasks'
 
-        # table headers
-        completed_tasks_as_lists.append(['Task', 'Completed'])
-        incomplete_tasks_as_lists.append(['Task', 'Due'])
-
         # create separate lists for completed and incomplete tasks
-        completed_tasks, incomplete_tasks = split_tasks(tasks)
+        completed_tasks, incomplete_tasks = split_list(tasks)
         completed_tasks.sort(key=lambda t: t.completed)  # sort by completed date
         incomplete_tasks.sort(key=lambda t: t.due)  # sort by due date
 
-        # convert from Task objects to lists
+        # convert from Task objects to lists and format dates
         for task in completed_tasks:
-            completed_tasks_as_lists.append(task.convert_to_list())
-        for task in incomplete_tasks:
-            incomplete_tasks_as_lists.append(task.convert_to_list())
+            task.completed = format_date(task.completed)
+            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed))
 
-        # export to pdf
+        for task in incomplete_tasks:
+            formatted_date = format_date(task.due)
+            if command == 'tasks':
+                if task.is_overdue:
+                    formatted_date = click.style(formatted_date, fg='red')
+            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date))
+
         if command == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
             story.append(Paragraph(str(len(completed_tasks)) + ' completed tasks', styles['Heading2']))
@@ -459,7 +478,6 @@ def display_tasks(list_name, tasks, status, command, filename=''):
             t.setStyle(table_style)
             story.append(t)
 
-        # display in terminal
         elif command == 'tasks':
             print(tabulate(incomplete_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
             print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
@@ -535,7 +553,7 @@ def tasks(list_name, tag, status, verbose):
         click.secho('No list by that name found.', fg='red')
         return
 
-    return display_tasks(list_name, tasks, status, 'tasks')
+    return display_tasks(list_name, tag, tasks, status, 'tasks')
 
 
     # this was the verbose version
@@ -583,7 +601,7 @@ def export(list_name, tag, status, filename):
         click.secho('No list by that name found.', fg='red')
         return
 
-    return display_tasks(list_name, tasks, status, 'export', filename)
+    return display_tasks(list_name, tag, tasks, status, 'export', filename)
 
 
 if __name__ == "__main__":
