@@ -2,8 +2,7 @@
 
 '''
     TO DO:
-        - if due date/time in past, make red
-            - terminal display done; still need to do for exported pdf
+        - add header and count of complete/incomplete/all tasks to terminal display
         - verbose output from tasks() and export()
         - continue to develop tests (most immediately for display_tasks())
         - adjust authenticate() to have reauthenticate scenario
@@ -30,11 +29,9 @@ import arrow
 
 from tabulate import tabulate
 
-from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib import colors
 
 from config import API_KEY, SHARED_SECRET
@@ -54,16 +51,6 @@ except FileNotFoundError:
         settings = {}
 except EOFError:
     settings = {}
-
-
-class BadDataException(Exception):
-    pass
-
-class NoTasksException(Exception):
-    pass
-
-class NoListException(Exception):
-    pass
 
 
 ################################################################################
@@ -110,6 +97,16 @@ class Task:
         if 'contact' in taskseries['participants']:
             for participant in taskseries['participants']['contact']:
                 self.participants.append(participant['fullname'])
+
+
+class BadDataException(Exception):
+    pass
+
+class NoTasksException(Exception):
+    pass
+
+class NoListException(Exception):
+    pass
 
 ################################################################################
 # API AUTHORIZATION FUNCTIONS
@@ -254,14 +251,14 @@ def get_rtm_settings():
 ################################################################################
 
 def save(settings):
-    ''' Save user settings to file. '''
+    ''' Save user settings to file.'''
 
     with open(user_settings, 'wb') as f:
         pickle.dump(settings, f)
 
 
 def get_lists():
-    """ Get all of the user's lists."""
+    ''' Get all of the user's lists.'''
 
     params = {'api_key':API_KEY,
               'method':'rtm.lists.getList',
@@ -276,13 +273,7 @@ def get_lists():
 
 
 def get_tasks(list_name='', tag='', status=''):
-    ''' Return list of Task objects by by various attributes.
-
-    Inputs:
-        -list_name: name of list_name
-        -tag: name of tag
-        -status: completed or incomplete
-    '''
+    ''' Return list of Task objects by various attributes.'''
 
     params = {'api_key':API_KEY,
               'method':'rtm.tasks.getList',
@@ -311,7 +302,7 @@ def get_tasks(list_name='', tag='', status=''):
     if status == 'incomplete':
         params['filter'] = 'status:incompleted'
 
-    # if tag included, will have find tasks for that tag later because
+    # if tag included, will have to find tasks for that tag later because
     # the query can take only one params['filter'] parameter
 
     params['api_sig'] = make_api_sig(params)
@@ -379,21 +370,20 @@ def format_date(task_date):
         return task_date
 
 
-def convert_to_list(task_name, task_date):
+def convert_to_list(task_name, task_date, command):
     ''' Returns Task as list, with task name text wrapped.'''
-    return ['\n'.join(textwrap.wrap(task_name, 50)), task_date]
+    if command == 'tasks':
+        return ['\n'.join(textwrap.wrap(task_name, 50)), task_date]
+    if command == 'export':
+        return ['\n'.join(textwrap.wrap(task_name, 70)), task_date]
 
 
 def display_tasks(list_name, tag, tasks, status, command, filename=''):
     ''' Display tasks either in terminal or as pdf. '''
 
-    tasks_as_lists = []
-
-    # set up lists of task info that will be displayed, table headers
     completed_tasks_as_lists = [['Task', 'Completed']]
     incomplete_tasks_as_lists = [['Task', 'Due']]
 
-    # include list name in page heading if getting tasks from particular list
     if list_name:
         heading1 = list_name + ' - '
     elif tag:
@@ -401,29 +391,34 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
     else:
         heading1 = ''
 
-    # set up pdf
     if command == 'export':
         doc = SimpleDocTemplate(filename+'.pdf', pagesize=letter)
         styles=getSampleStyleSheet()
         table_style = TableStyle([('INNERGRID', (0,0), (-1,-1), 0.25, colors.black),
                                   ('BOX', (0,0), (-1,-1), 1.25, colors.black),
                                  ])
+        col1_width, col2_width = 340, 115
+        red_text = ParagraphStyle('red', textColor = colors.red)
         story = []
 
     if status and status == 'incomplete':
         heading1 += str(len(tasks)) + ' incomplete tasks'
-        tasks.sort(key=lambda t: t.due)  # sort by due date
+        tasks.sort(key=lambda t: t.due)
 
         for task in tasks:
             formatted_date = format_date(task.due)
-            if command == 'tasks':
-                if task.is_overdue:
+
+            if task.is_overdue:
+                if command == 'tasks':
                     formatted_date = click.style(formatted_date, fg='red')
-            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date))
+                if command == 'export':
+                    formatted_date = Paragraph(formatted_date, red_text)
+
+            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date, command))
 
         if command == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
-            t = Table(incomplete_tasks_as_lists)
+            t = Table(incomplete_tasks_as_lists, colWidths=(col1_width, col2_width))
             t.setStyle(table_style)
             story.append(t)
         elif command == 'tasks':
@@ -431,50 +426,50 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
 
     elif status and status == 'completed':
         heading1 += str(len(tasks)) + ' completed tasks'
-        tasks.sort(key=lambda t: t.completed)  # sort by completed date
+        tasks.sort(key=lambda t: t.completed)
 
         for task in tasks:
             task.completed = format_date(task.completed)
-            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed))
+            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed, command))
 
         if command == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
-            t = Table(completed_tasks_as_lists)
+            t = Table(completed_tasks_as_lists, colWidths=(col1_width, col2_width))
             t.setStyle(table_style)
             story.append(t)
-        if command == 'tasks':
+        elif command == 'tasks':
             print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
 
     else:
-        # page header
         heading1 += str(len(tasks)) + ' tasks'
 
-        # create separate lists for completed and incomplete tasks
         completed_tasks, incomplete_tasks = split_list(tasks)
-        completed_tasks.sort(key=lambda t: t.completed)  # sort by completed date
-        incomplete_tasks.sort(key=lambda t: t.due)  # sort by due date
+        completed_tasks.sort(key=lambda t: t.completed)
+        incomplete_tasks.sort(key=lambda t: t.due)
 
-        # convert from Task objects to lists and format dates
         for task in completed_tasks:
             task.completed = format_date(task.completed)
-            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed))
+            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed, command))
 
         for task in incomplete_tasks:
             formatted_date = format_date(task.due)
-            if command == 'tasks':
-                if task.is_overdue:
+            if task.is_overdue:
+                if command == 'tasks':
                     formatted_date = click.style(formatted_date, fg='red')
-            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date))
+                if command == 'export':
+                    formatted_date = Paragraph(formatted_date, red_text)
+            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date, command))
 
         if command == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
-            story.append(Paragraph(str(len(completed_tasks)) + ' completed tasks', styles['Heading2']))
-            t = Table(completed_tasks_as_lists)
+
+            story.append(Paragraph(str(len(incomplete_tasks)) + ' incomplete tasks', styles['Heading2']))
+            t = Table(incomplete_tasks_as_lists, colWidths=(col1_width, col2_width))
             t.setStyle(table_style)
             story.append(t)
 
-            story.append(Paragraph(str(len(incomplete_tasks)) + ' incomplete tasks', styles['Heading2']))
-            t = Table(incomplete_tasks_as_lists)
+            story.append(Paragraph(str(len(completed_tasks)) + ' completed tasks', styles['Heading2']))
+            t = Table(completed_tasks_as_lists, colWidths=(col1_width, col2_width))
             t.setStyle(table_style)
             story.append(t)
 
@@ -493,9 +488,9 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
 ################################################################################
 @click.group()
 def main():
-    """Don't Forget the Python: command-line interface for Remember the Milk.
+    '''Don't Forget the Python: command-line interface for Remember the Milk.
 
-    Type "<command> --help" to see options and additional info."""
+    Type "<command> --help" to see options and additional info.'''
 
 
 @main.command()
@@ -547,7 +542,7 @@ def tasks(list_name, tag, status, verbose):
     try:
         tasks = get_tasks(list_name, tag, status)
     except NoTasksException:
-        click.secho("No tasks found with those parameters.", fg='red')
+        click.secho('No tasks found with those parameters.', fg='red')
         return
     except NoListException:
         click.secho('No list by that name found.', fg='red')
@@ -595,7 +590,7 @@ def export(list_name, tag, status, filename):
     try:
         tasks = get_tasks(list_name, tag, status)
     except NoTasksException:
-        click.secho("No tasks found with those parameters.", fg='red')
+        click.secho('No tasks found with those parameters.', fg='red')
         return
     except NoListException:
         click.secho('No list by that name found.', fg='red')
