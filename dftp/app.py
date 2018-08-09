@@ -1,7 +1,7 @@
 #!python3
 
 import sys
-import os.path
+from pathlib import Path
 import datetime
 import textwrap
 import hashlib
@@ -27,12 +27,15 @@ auth_url = 'https://www.rememberthemilk.com/services/auth/'
 methods_url = 'https://api.rememberthemilk.com/services/rest/'
 
 
-# create config.ini if it doesn't yet exist and populate dictionary keys.
+# create or read config file (in user's home directory)
 global config
 config = configparser.ConfigParser()
 
-if os.path.exists('config.ini'):
-    config.read('config.ini')
+global config_file
+config_file = Path().home().joinpath('.dftp')
+
+if config_file.is_file():
+    config.read(config_file)
 else:
     config['USER SETTINGS'] = {'token': '',
                                'username': '',
@@ -40,7 +43,8 @@ else:
                                'timezone': '',
                                'dateformat': '',
                                'timeformat': ''}
-    config.write(open('config.ini', 'w'))
+    with open(config_file, 'w') as fp:
+        config.write(fp)
 
 
 ################################################################################
@@ -230,8 +234,8 @@ def save(config):
     for key, value in config['USER SETTINGS'].items():
         config.set('USER SETTINGS', key, value)
 
-    with open('config.ini', 'w') as configfile:
-        config.write(configfile)
+    with open(config_file, 'w') as fp:
+        config.write(fp)
 
     return
 
