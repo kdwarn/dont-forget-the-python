@@ -1,6 +1,5 @@
 #!python3
 
-
 import random
 import string
 
@@ -50,7 +49,7 @@ def create_random_tasks(number_of_tasks):
 
 
 def create_one_task(ts_values, t_values):
-    ''' Create on task with provided values. '''
+    ''' Create one task with provided values. '''
     ts_data = dict(zip(taskseries_keys, ts_values))
     t_data = dict(zip(task_keys, t_values))
     return Task(ts_data, t_data)
@@ -83,13 +82,6 @@ def test_convert_one_random_task_to_list(tasks_one_random):
     assert isinstance(a, list) is True
 
 
-# This one is unncessary, just testing out different ways to run tests.
-@pytest.mark.xfail()
-def test_convert_one_random_task_to_list_fail(tasks_one_random):
-    a = convert_to_list(tasks_one_random.name, tasks_one_random.due, 'tasks')
-    assert isinstance(a, list) is False
-
-
 def test_id_is_int_10_random(tasks_10_random):
     assert isinstance(tasks_10_random.id, int) is True
 
@@ -97,3 +89,20 @@ def test_id_is_int_10_random(tasks_10_random):
 def test_convert_10_random_tasks_to_list(tasks_10_random):
     a = convert_to_list(tasks_10_random.name, tasks_10_random.due, 'tasks')
     assert isinstance(a, list) is True
+
+
+################################################################################
+# testing due and completed dates
+################################################################################
+
+# date values are in iso format
+
+# task due in one day from now
+ts1_values = ['1', 'task 1', '', '', '', '']
+t1_values = [arrow.now().shift(days=1).isoformat(), '', '']
+task1 = create_one_task(ts1_values, t1_values)
+
+# task due yesterday
+ts2_values = ['2', 'task 2', '', '', '', '']
+t2_values = [arrow.now().shift(days=-1).isoformat(), '', '']
+task2 = create_one_task(ts2_values, t2_values)

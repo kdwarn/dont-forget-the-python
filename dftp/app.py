@@ -57,14 +57,22 @@ class Task:
         self.name = taskseries['name']
         self.url = '' if not taskseries['url'] else taskseries['url']
 
-        # keep due and completed times as strings in order to enable easy sorting later
-        self.due = 'never' if not task['due'] else task['due']  # iso format, utc
         self.completed = task['completed']  # iso format, utc
 
-        # but use arrow objects in order to determine overdue tasks
+        # keep due and completed times as strings in order to enable easy sorting later
+        self.due = 'never' if not task['due'] else task['due']  # iso format, utc
+
+        # also set up an arrow object (date only) to help deal with issue
+        # of RTM setting tasks with no due time as midnight
+        self.due_date = ''
+
         self.is_overdue = False
+
+        # set due_date and is_overdue if the task has a due date(time)
         if self.due != 'never':
             task_due = arrow.get(task['due']).to(config['USER SETTINGS']['timezone'])
+
+            self.due_date = task_due.date()
 
             # if it's due at midnight, it's due sometime that day, so don't
             # make it overdue unless date (not time) is past
@@ -255,7 +263,8 @@ def get_lists():
     return data['lists']['list']
 
 
-def get_tasks(list_name='', tag='', status=''):
+def get_tasks(list_name, tag, due, due_before, due_after, completed_on,
+              completed_before, completed_after, status=''):
     ''' Return list of Task objects by various attributes.'''
 
     params = {'api_key':api_key,
@@ -276,17 +285,20 @@ def get_tasks(list_name='', tag='', status=''):
 
         params['list_id'] = list_id
 
+    # completed_on, completed_before, and completed_after only apply to completed
+    # dates, but the user may not include that flag, so set it
+    if completed_on or completed_before or completed_after:
+        status = 'completed'
+
     if status == 'completed':
-        # figure out x days ago date
-        #since = datetime.date.today() - datetime.timedelta(days=days)
-        #params['filter'] = 'completedAfter:' + str(since)
         params['filter'] = 'status:completed'
 
     if status == 'incomplete':
         params['filter'] = 'status:incompleted'
 
-    # if tag included, will have to find tasks for that tag later because
-    # the query can take only one params['filter'] parameter
+    # if other options included, have to filter for thoese later since
+    # the query can take only one params['filter'] parameter and it doesn't
+    # seem like they can be chained together
 
     params['api_sig'] = make_api_sig(params)
 
@@ -312,7 +324,26 @@ def get_tasks(list_name='', tag='', status=''):
     if not tasks:
         raise NoTasksException
 
-    return tasks
+    # further filter tasks by dates
+    if due:
+        tasks = [task for task in tasks if task.due_date and task.due_date == human_date_to_arrow(due, 'due')]
+    if due_before:
+        tasks = [task for task in tasks if task.due_date and task.due_date < human_date_to_arrow(due_before, 'due')]
+    if due_after:
+        tasks = [task for task in tasks if task.due_date and task.due_date > human_date_to_arrow(due_after, 'due')]
+    if completed_on:
+        tasks = [task for task in tasks if task.due_date and task.due_date == human_date_to_arrow(completed_on, 'completed')]
+    if completed_before:
+        tasks = [task for task in tasks if task.due_date and task.due_date < human_date_to_arrow(completed_before, 'completed')]
+    if completed_after:
+        tasks = [task for task in tasks if task.due_date and task.due_date > human_date_to_arrow(completed_after, 'completed')]
+
+    if not tasks:
+        raise NoTasksException
+
+    # return status here in the case that the user chose options for a completed
+    # date, and didn't also set the completed option
+    return status, tasks
 
 
 def split_list(all_tasks):
@@ -336,6 +367,69 @@ def split_list(all_tasks):
         incomplete_tasks.sort(key=lambda t: t.due)
 
     return completed_tasks, incomplete_tasks
+
+def human_date_to_arrow(date, type_of_filter):
+    converted_date = ''
+
+    # because we have to try each of these, the higher up in the list the given
+    # format is, the quicker the result will be returned, so limit the number
+    # of formats. (And be sure to inform user of preferred format in help text.)
+    date_formats = ['M/D/YY', 'M/D', 'M/D/YYYY',
+                    'MM/DD/YY', 'MM/D/YY',
+                    'M/DD/YYYY',
+                    'MM/DD/YYYY', 'MM/D/YYYY',
+                    'M/DD/YY',
+                    'MM/DD', 'MM/D',
+                    'M/DD',
+                    ]
+
+    # those correspond to:
+    # 8/5/18, 8/5, 8/5/2018
+    # 08/05/18, 08/5/18
+    # 8/05/2018
+    # 08/05/2018, 08/5/2018
+    # 8/05/18,
+    # 08/05, 08/5
+    # 8/05
+
+    # set some custom dates
+    if date.lower() == 'today':
+        return arrow.now().date()
+    elif date.lower() == 'tomorrow':
+        return arrow.now().shift(days=+1).date()
+    elif date.lower() == 'yesterday':
+        return arrow.now().shift(days=-1).date()
+
+    try:
+        converted_date = arrow.get(date, date_formats).date()
+        # if user didn't include year, arrow will set it to 1
+        # assume they meant the next date in the future
+        if converted_date.year == 1:
+            date_current_year = date + ' ' + str(arrow.get().to(config['USER SETTINGS']['timezone']).year)
+
+            # if date given is a due date, if not yet passed, use
+            # current year, otherwise use next year.
+            if type_of_filter == 'due':
+                if arrow.get(date_current_year, date_formats).date() >= arrow.now().date():
+                    converted_date = arrow.get(date_current_year, date_formats).date()
+                else:
+                    date =  date + ' ' + str(arrow.get().year + 1)
+                    converted_date = arrow.get(date, date_formats).date()
+
+            # if date given is a completed date, if it not yet in past, use
+            # previous year, otherwise use current year
+            if type_of_filter == 'completed':
+                if arrow.get(date_current_year, date_formats).date() >= arrow.now().date():
+                    date =  date + ' ' + str(arrow.get().year - 1)
+                    converted_date = arrow.get(date, date_formats).date()
+                else:
+                    converted_date = arrow.get(date_current_year, date_formats).date()
+
+        return converted_date
+
+    except arrow.parser.ParserError:
+        click.secho('Unrecognized date format', fg='red')
+        return sys.exit()
 
 
 def format_date(task_date):
@@ -539,14 +633,29 @@ def lists(archived, smart, all):
 @click.option('--tag', '-t', default='', help="Tasks with a particular tag.")
 @click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
 @click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
-def tasks(list_name, tag, status):
+@click.option('--due', '-d', default='', help='Tasks due on particular date.')
+@click.option('--due_before', '-db', default='', help='Tasks due before a particular date.')
+@click.option('--due_after', '-da', default='', help='Tasks due after a particular date.')
+@click.option('--completed_on', '-co', default='', help='Tasks completed on a particular date.')
+@click.option('--completed_before', '-cb', default='', help='Tasks completed before a particular date.')
+@click.option('--completed_after', '-ca', default='', help='Tasks completed after a particular date.')
+def tasks(list_name, tag, status, due, due_before, due_after, completed_on,
+        completed_before, completed_after):
     '''
     List your tasks. All options can be used together, except, of course,
     for -i and -c.
+
+    Although dates can be given in a variety of formats, unless you choose
+    "today", "yesterday", or "tomorrow" (without the quotes), the result will be
+    returned quickest if you use the format M/D/YY, e.g. 8/5/18. Months should always
+    precede days.
+
+    Use the before and after date options together in order to get tasks between two dates.
     '''
 
     try:
-        tasks = get_tasks(list_name, tag, status)
+        status, tasks = get_tasks(list_name, tag, due, due_before, due_after,
+            completed_on, completed_before, completed_after, status=status)
     except NoTasksException:
         click.secho('No tasks found with those parameters.', fg='red')
         return
@@ -563,14 +672,29 @@ def tasks(list_name, tag, status):
 @click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
 @click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
 @click.option('--filename', '-f', default='RTM tasks', help="Name of file to create.")
-def export(list_name, tag, status, filename):
+@click.option('--due', '-d', 'due', default='', help='Tasks due on particular date.')
+@click.option('--due_before', '-db', default='', help='Tasks due before a particular date.')
+@click.option('--due_after', '-da', default='', help='Tasks due after a particular date.')
+@click.option('--completed_on', '-co', default='', help='Tasks completed on particular date.')
+@click.option('--completed_before', '-cb', default='', help='Tasks completed before a particular date.')
+@click.option('--completed_after', '-ca', default='', help='Tasks completed after a particular date.')
+def export(list_name, tag, status, filename, due, due_before, due_after, completed_on,
+           completed_before, completed_after):
     '''
     Export your tasks to pdf. All options can be used together, except, of
     course, for -i and -c.
+
+    Although dates can be given in a variety of formats, unless you choose
+    "today", "yesterday", or "tomorrow" (without the quotes), the result will be
+    returned quickest if you use the format M/D/YY, e.g. 8/5/18. Months should always
+    precede days.
+
+    Use the before and after date options together in order to get tasks between two dates.
     '''
 
     try:
-        tasks = get_tasks(list_name, tag, status)
+        status, tasks = get_tasks(list_name, tag, due, due_before, due_after, completed_on,
+            completed_before, completed_after, status=status)
     except NoTasksException:
         click.secho('No tasks found with those parameters.', fg='red')
         return
