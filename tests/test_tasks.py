@@ -78,7 +78,7 @@ def test_id_is_int_one(tasks_one_random):
 
 
 def test_convert_one_random_task_to_list(tasks_one_random):
-    a = convert_to_list(tasks_one_random.name, tasks_one_random.due, 'tasks')
+    a = convert_to_list('print', tasks_one_random.name, tasks_one_random.due)
     assert isinstance(a, list) is True
 
 
@@ -87,7 +87,7 @@ def test_id_is_int_10_random(tasks_10_random):
 
 
 def test_convert_10_random_tasks_to_list(tasks_10_random):
-    a = convert_to_list(tasks_10_random.name, tasks_10_random.due, 'tasks')
+    a = convert_to_list('print', tasks_10_random.name, tasks_10_random.due)
     assert isinstance(a, list) is True
 
 

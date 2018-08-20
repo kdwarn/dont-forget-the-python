@@ -114,28 +114,6 @@ class NoListException(Exception):
 ################################################################################
 # API AUTHORIZATION FUNCTIONS
 ################################################################################
-def handle_response(r):
-    ''' Deal with common responses from RTM API.'''
-
-    if r.status_code != 200:
-        click.secho(textwrap.fill('Error ({}:{}) connecting to Remember the '
-                'Milk. Please try again later.'.format(r.status_code, r.reason)), fg='red')
-        sys.exit('Bad Status Code')
-    else:
-        data = r.json()['rsp']
-
-        if data['stat'] != 'ok':
-            if data['err']['code'] == '98':  # Login failed / Invalid auth token
-                click.secho('Error with Remember the Milk Authentication.', fg='red')
-                authenticate()
-                return
-            else:
-                click.secho('Error: {}'.format(data['err']['msg']), fg='red')
-                sys.exit('Error {}.'.format(data['err']['code']))
-
-        return data
-
-
 def make_api_sig(params):
     '''
     Creates an API signature as required by RTM. See
@@ -232,6 +210,83 @@ def authenticate():
 
     return
 
+################################################################################
+# GET DATA FROM REMEMBER THE MILK
+################################################################################
+def handle_response(r):
+    ''' Deal with common responses from RTM API.'''
+
+    if r.status_code != 200:
+        click.secho(textwrap.fill('Error ({}:{}) connecting to Remember the '
+                'Milk. Please try again later.'.format(r.status_code, r.reason)), fg='red')
+        sys.exit('Bad Status Code')
+    else:
+        data = r.json()['rsp']
+
+        if data['stat'] != 'ok':
+            if data['err']['code'] == '98':  # Login failed / Invalid auth token
+                click.secho('Error with Remember the Milk Authentication.', fg='red')
+                authenticate()
+                return
+            else:
+                click.secho('Error: {}'.format(data['err']['msg']), fg='red')
+                sys.exit('Error {}.'.format(data['err']['code']))
+
+        return data
+
+
+def get_rtm_lists():
+    ''' Get all of the user's lists.'''
+
+    params = {'api_key':api_key,
+              'method':'rtm.lists.getList',
+              'format':'json',
+              'auth_token':config['USER SETTINGS']['token']}
+
+    params['api_sig'] = make_api_sig(params)
+
+    data = handle_response(requests.get(methods_url, params=params))
+
+    return data['lists']['list']
+
+
+def get_rtm_tasks(list_name, status):
+
+    params = {'api_key':api_key,
+              'method':'rtm.tasks.getList',
+              'format':'json',
+              'auth_token':config['USER SETTINGS']['token']}
+
+    if list_name:
+        rtm_lists = get_rtm_lists()
+
+        list_id = ''
+        for rtm_list in rtm_lists:
+            if list_name == rtm_list['name']:
+                list_id = rtm_list['id']
+
+        if not list_id:
+            raise NoListException
+
+        params['list_id'] = list_id
+
+
+    if status == 'completed':
+        params['filter'] = 'status:completed'
+
+    if status == 'incomplete':
+        params['filter'] = 'status:incompleted'
+
+    # if other options included, have to filter for thoese later since
+    # the query can take only one params['filter'] parameter and it doesn't
+    # seem like they can be chained together
+
+    params['api_sig'] = make_api_sig(params)
+
+    data = handle_response(requests.get(methods_url, params=params))
+
+    return data['tasks']
+
 
 ################################################################################
 #  HELPER FUNCTIONS
@@ -248,62 +303,9 @@ def save(config):
     return
 
 
-def get_lists():
-    ''' Get all of the user's lists.'''
-
-    params = {'api_key':api_key,
-              'method':'rtm.lists.getList',
-              'format':'json',
-              'auth_token':config['USER SETTINGS']['token']}
-
-    params['api_sig'] = make_api_sig(params)
-
-    data = handle_response(requests.get(methods_url, params=params))
-
-    return data['lists']['list']
-
-
-def get_tasks(list_name, tag, due, due_before, due_after, completed_on,
-              completed_before, completed_after, status=''):
+def create_Task_list(rtm_tasks, tag, due, due_before, due_after, completed_on,
+                     completed_before, completed_after, status=''):
     ''' Return list of Task objects by various attributes.'''
-
-    params = {'api_key':api_key,
-              'method':'rtm.tasks.getList',
-              'format':'json',
-              'auth_token':config['USER SETTINGS']['token']}
-
-    if list_name:
-        rtm_lists = get_lists()
-
-        list_id = ''
-        for rtm_list in rtm_lists:
-            if list_name == rtm_list['name']:
-                list_id = rtm_list['id']
-
-        if not list_id:
-            raise NoListException
-
-        params['list_id'] = list_id
-
-    # completed_on, completed_before, and completed_after only apply to completed
-    # dates, but the user may not include that flag, so set it
-    if completed_on or completed_before or completed_after:
-        status = 'completed'
-
-    if status == 'completed':
-        params['filter'] = 'status:completed'
-
-    if status == 'incomplete':
-        params['filter'] = 'status:incompleted'
-
-    # if other options included, have to filter for thoese later since
-    # the query can take only one params['filter'] parameter and it doesn't
-    # seem like they can be chained together
-
-    params['api_sig'] = make_api_sig(params)
-
-    data = handle_response(requests.get(methods_url, params=params))
-    rtm_tasks = data['tasks']
 
     tasks = []
 
@@ -321,6 +323,7 @@ def get_tasks(list_name, tag, due, due_before, due_after, completed_on,
                 else:
                     for task in taskseries['task']:
                         tasks.append(Task(taskseries, task))
+
     if not tasks:
         raise NoTasksException
 
@@ -341,9 +344,7 @@ def get_tasks(list_name, tag, due, due_before, due_after, completed_on,
     if not tasks:
         raise NoTasksException
 
-    # return status here in the case that the user chose options for a completed
-    # date, and didn't also set the completed option
-    return status, tasks
+    return tasks
 
 
 def split_list(all_tasks):
@@ -368,6 +369,7 @@ def split_list(all_tasks):
 
     return completed_tasks, incomplete_tasks
 
+
 def human_date_to_arrow(date, type_of_filter):
     converted_date = ''
 
@@ -382,15 +384,6 @@ def human_date_to_arrow(date, type_of_filter):
                     'MM/DD', 'MM/D',
                     'M/DD',
                     ]
-
-    # those correspond to:
-    # 8/5/18, 8/5, 8/5/2018
-    # 08/05/18, 08/5/18
-    # 8/05/2018
-    # 08/05/2018, 08/5/2018
-    # 8/05/18,
-    # 08/05, 08/5
-    # 8/05
 
     # set some custom dates
     if date.lower() == 'today':
@@ -449,15 +442,15 @@ def format_date(task_date):
         return task_date
 
 
-def convert_to_list(task_name, task_date, command):
+def convert_to_list(method, task_name, task_date):
     ''' Returns Task as list, with task name text wrapped.'''
-    if command == 'tasks':
+    if method == 'print':
         return ['\n'.join(textwrap.wrap(task_name, 50)), task_date]
-    if command == 'export':
+    if method == 'export':
         return ['\n'.join(textwrap.wrap(task_name, 70)), task_date]
 
 
-def display_tasks(list_name, tag, tasks, status, command, filename=''):
+def display_tasks(method, list_name, tag, tasks, status, filename=''):
     ''' Display tasks either in terminal or as pdf. '''
 
     completed_tasks_as_lists = [['Task', 'Completed']]
@@ -470,7 +463,7 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
     else:
         heading1 = ''
 
-    if command == 'export':
+    if method == 'export':
         doc = SimpleDocTemplate(filename+'.pdf', pagesize=letter)
         styles=getSampleStyleSheet()
         table_style = TableStyle([('INNERGRID', (0,0), (-1,-1), 0.25, colors.black),
@@ -488,19 +481,19 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
             formatted_date = format_date(task.due)
 
             if task.is_overdue:
-                if command == 'tasks':
+                if method == 'print':
                     formatted_date = click.style(formatted_date, fg='red')
-                if command == 'export':
+                if method == 'export':
                     formatted_date = Paragraph(formatted_date, red_text)
 
-            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date, command))
+            incomplete_tasks_as_lists.append(convert_to_list(method, task.name, formatted_date))
 
-        if command == 'export':
+        if method == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
             t = Table(incomplete_tasks_as_lists, colWidths=(col1_width, col2_width))
             t.setStyle(table_style)
             story.append(t)
-        elif command == 'tasks':
+        elif method == 'print':
             click.secho('\nIncomplete Tasks', fg='green')
             print(tabulate(incomplete_tasks_as_lists, headers="firstrow", tablefmt="fancy_grid"))
 
@@ -510,14 +503,14 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
 
         for task in tasks:
             task.completed = format_date(task.completed)
-            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed, command))
+            completed_tasks_as_lists.append(convert_to_list(method, task.name, task.completed))
 
-        if command == 'export':
+        if method == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
             t = Table(completed_tasks_as_lists, colWidths=(col1_width, col2_width))
             t.setStyle(table_style)
             story.append(t)
-        elif command == 'tasks':
+        elif method == 'print':
             click.secho('\nCompleted Tasks', fg='green')
             print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
 
@@ -530,18 +523,18 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
 
         for task in completed_tasks:
             task.completed = format_date(task.completed)
-            completed_tasks_as_lists.append(convert_to_list(task.name, task.completed, command))
+            completed_tasks_as_lists.append(convert_to_list(method, task.name, task.completed))
 
         for task in incomplete_tasks:
             formatted_date = format_date(task.due)
             if task.is_overdue:
-                if command == 'tasks':
+                if method == 'print':
                     formatted_date = click.style(formatted_date, fg='red')
-                if command == 'export':
+                if method == 'export':
                     formatted_date = Paragraph(formatted_date, red_text)
-            incomplete_tasks_as_lists.append(convert_to_list(task.name, formatted_date, command))
+            incomplete_tasks_as_lists.append(convert_to_list(method, task.name, formatted_date))
 
-        if command == 'export':
+        if method == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
 
             story.append(Paragraph(str(len(incomplete_tasks)) + ' incomplete tasks', styles['Heading2']))
@@ -554,13 +547,13 @@ def display_tasks(list_name, tag, tasks, status, command, filename=''):
             t.setStyle(table_style)
             story.append(t)
 
-        elif command == 'tasks':
+        elif method == 'print':
             click.secho('\nIncomplete Tasks', fg='green')
             print(tabulate(incomplete_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
             click.secho('\nCompleted Tasks', fg='green')
             print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
 
-    if command == 'export':
+    if method == 'export':
         doc.build(story)
 
     return
@@ -599,7 +592,7 @@ def main():
 def lists(archived, smart, all):
     '''List your lists!'''
 
-    rtm_lists = get_lists()
+    rtm_lists = get_rtm_lists()
 
     sub_list = []
 
@@ -629,21 +622,24 @@ def lists(archived, smart, all):
 
 
 @main.command()
-@click.option('--list_name', '-l', default='', help="Tasks from a particular list.")
-@click.option('--tag', '-t', default='', help="Tasks with a particular tag.")
-@click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
-@click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
+@click.option('--print', '-p', 'method', flag_value='print', default=True, help='Print tasks to terminal.')
+@click.option('--export', '-e', 'method', flag_value='export', help='Export tasks to pdf.')
+@click.option('--list_name', '-l', default='', help='Tasks from a particular list.')
+@click.option('--tag', '-t', default='', help='Tasks with a particular tag.')
+@click.option('--incomplete', '-i', 'status', flag_value='incomplete', help='Incomplete tasks only.')
+@click.option('--completed', '-c', 'status', flag_value='completed', help='Completed tasks only.')
 @click.option('--due', '-d', default='', help='Tasks due on particular date.')
 @click.option('--due_before', '-db', default='', help='Tasks due before a particular date.')
 @click.option('--due_after', '-da', default='', help='Tasks due after a particular date.')
 @click.option('--completed_on', '-co', default='', help='Tasks completed on a particular date.')
 @click.option('--completed_before', '-cb', default='', help='Tasks completed before a particular date.')
 @click.option('--completed_after', '-ca', default='', help='Tasks completed after a particular date.')
-def tasks(list_name, tag, status, due, due_before, due_after, completed_on,
-        completed_before, completed_after):
+@click.option('--filename', '-f', default='RTM tasks', help="Name of file to create.")
+def tasks(method, list_name, tag, status, due, due_before, due_after, completed_on,
+        completed_before, completed_after, filename):
     '''
     List your tasks. All options can be used together, except, of course,
-    for -i and -c.
+    for -p and -e and -i and -c.
 
     Although dates can be given in a variety of formats, unless you choose
     "today", "yesterday", or "tomorrow" (without the quotes), the result will be
@@ -653,56 +649,29 @@ def tasks(list_name, tag, status, due, due_before, due_after, completed_on,
     Use the before and after date options together in order to get tasks between two dates.
     '''
 
+    # completed_on, completed_before, and completed_after only apply to completed
+    # tasks, but the user may not have included that flag, so set it
+    if completed_on or completed_before or completed_after:
+        status = 'completed'
+
     try:
-        status, tasks = get_tasks(list_name, tag, due, due_before, due_after,
+        rtm_list_of_tasks = get_rtm_tasks(list_name, status)
+    except NoListException:
+        click.secho('No list by that name found.', fg='red')
+        return
+
+    try:
+        tasks = create_Task_list(rtm_list_of_tasks, tag, due, due_before, due_after,
             completed_on, completed_before, completed_after, status=status)
     except NoTasksException:
         click.secho('No tasks found with those parameters.', fg='red')
         return
-    except NoListException:
-        click.secho('No list by that name found.', fg='red')
-        return
-
-    return display_tasks(list_name, tag, tasks, status, 'tasks')
 
 
-@main.command()
-@click.option('--list_name', '-l', default='', help="Tasks from a particular list.")
-@click.option('--tag', '-t', default='', help="Tasks with a particular tag.")
-@click.option('--incomplete', '-i', 'status', flag_value='incomplete', help="Incomplete tasks only.")
-@click.option('--completed', '-c', 'status', flag_value='completed', help="Completed tasks only.")
-@click.option('--filename', '-f', default='RTM tasks', help="Name of file to create.")
-@click.option('--due', '-d', 'due', default='', help='Tasks due on particular date.')
-@click.option('--due_before', '-db', default='', help='Tasks due before a particular date.')
-@click.option('--due_after', '-da', default='', help='Tasks due after a particular date.')
-@click.option('--completed_on', '-co', default='', help='Tasks completed on particular date.')
-@click.option('--completed_before', '-cb', default='', help='Tasks completed before a particular date.')
-@click.option('--completed_after', '-ca', default='', help='Tasks completed after a particular date.')
-def export(list_name, tag, status, filename, due, due_before, due_after, completed_on,
-           completed_before, completed_after):
-    '''
-    Export your tasks to pdf. All options can be used together, except, of
-    course, for -i and -c.
-
-    Although dates can be given in a variety of formats, unless you choose
-    "today", "yesterday", or "tomorrow" (without the quotes), the result will be
-    returned quickest if you use the format M/D/YY, e.g. 8/5/18. Months should always
-    precede days.
-
-    Use the before and after date options together in order to get tasks between two dates.
-    '''
-
-    try:
-        status, tasks = get_tasks(list_name, tag, due, due_before, due_after, completed_on,
-            completed_before, completed_after, status=status)
-    except NoTasksException:
-        click.secho('No tasks found with those parameters.', fg='red')
-        return
-    except NoListException:
-        click.secho('No list by that name found.', fg='red')
-        return
-
-    return display_tasks(list_name, tag, tasks, status, 'export', filename)
+    if method == 'print':
+        return display_tasks('print', list_name, tag, tasks, status)
+    else:
+        return display_tasks('export', list_name, tag, tasks, status, filename)
 
 
 if __name__ == "__main__":
