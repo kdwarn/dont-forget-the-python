@@ -285,7 +285,10 @@ def get_rtm_tasks(list_name, status):
 
     data = handle_response(requests.get(methods_url, params=params))
 
-    return data['tasks']
+    if data['tasks']['list'][0].get('taskseries') is None:
+        raise NoTasksException
+    # return data['tasks']
+    return data['tasks']['list']
 
 
 ################################################################################
@@ -309,12 +312,9 @@ def create_Task_list(rtm_tasks, tag, due, due_before, due_after, completed_on,
 
     tasks = []
 
-    if 'list' not in rtm_tasks:
-        raise NoTasksException
-
-    for rtm_list in rtm_tasks['list']:
-        if 'taskseries' in rtm_list:
-            for taskseries in rtm_list['taskseries']:
+    for rtm_task in rtm_tasks:
+        if 'taskseries' in rtm_task:
+            for taskseries in rtm_task['taskseries']:
                 if tag:
                     if 'tag' in taskseries['tags']:
                         for task in taskseries['task']:
@@ -655,13 +655,16 @@ def tasks(method, list_name, tag, status, due, due_before, due_after, completed_
         status = 'completed'
 
     try:
-        rtm_list_of_tasks = get_rtm_tasks(list_name, status)
+        rtm_tasks = get_rtm_tasks(list_name, status)
     except NoListException:
         click.secho('No list by that name found.', fg='red')
         return
+    except NoTasksException:
+        click.secho('No tasks with those parameters.', fg='red')
+        return
 
     try:
-        tasks = create_Task_list(rtm_list_of_tasks, tag, due, due_before, due_after,
+        tasks = create_Task_list(rtm_tasks, tag, due, due_before, due_after,
             completed_on, completed_before, completed_after, status=status)
     except NoTasksException:
         click.secho('No tasks found with those parameters.', fg='red')

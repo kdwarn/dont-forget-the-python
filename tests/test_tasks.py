@@ -6,7 +6,7 @@ import string
 import pytest
 import arrow
 
-from dftp.app import Task, convert_to_list
+from dftp.app import Task, convert_to_list, create_Task_list
 
 
 # dictionary keys for variables to create Tasks
@@ -94,15 +94,3 @@ def test_convert_10_random_tasks_to_list(tasks_10_random):
 ################################################################################
 # testing due and completed dates
 ################################################################################
-
-# date values are in iso format
-
-# task due in one day from now
-ts1_values = ['1', 'task 1', '', '', '', '']
-t1_values = [arrow.now().shift(days=1).isoformat(), '', '']
-task1 = create_one_task(ts1_values, t1_values)
-
-# task due yesterday
-ts2_values = ['2', 'task 2', '', '', '', '']
-t2_values = [arrow.now().shift(days=-1).isoformat(), '', '']
-task2 = create_one_task(ts2_values, t2_values)
