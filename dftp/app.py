@@ -6,6 +6,7 @@ import datetime
 import textwrap
 import hashlib
 import configparser
+import re
 
 import click
 import requests
@@ -57,22 +58,15 @@ class Task:
         self.name = taskseries['name']
         self.url = '' if not taskseries['url'] else taskseries['url']
 
-        self.completed = task['completed']  # iso format, utc
-
         # keep due and completed times as strings in order to enable easy sorting later
         self.due = 'never' if not task['due'] else task['due']  # iso format, utc
-
-        # also set up an arrow object (date only) to help deal with issue
-        # of RTM setting tasks with no due time as midnight
-        self.due_date = ''
+        self.completed = task['completed']  # iso format, utc
 
         self.is_overdue = False
 
-        # set due_date and is_overdue if the task has a due date(time)
+        # set .is_overdue if the task has a due date(time)
         if self.due != 'never':
             task_due = arrow.get(task['due']).to(config['USER SETTINGS']['timezone'])
-
-            self.due_date = task_due.date()
 
             # if it's due at midnight, it's due sometime that day, so don't
             # make it overdue unless date (not time) is past
@@ -100,15 +94,35 @@ class Task:
             for participant in taskseries['participants']['contact']:
                 self.participants.append(participant['fullname'])
 
-
-class BadDataException(Exception):
+class dftpException(BaseException):
     pass
 
-class NoTasksException(Exception):
+class BadDataException(dftpException):
     pass
 
-class NoListException(Exception):
-    pass
+class NoTasksException(dftpException):
+    def __init__(self, message=''):
+        self.message = message
+        if not message:
+            self.message = 'No tasks with those parameters.'
+
+class NoListException(dftpException):
+    def __init__(self, message=''):
+        self.message = message
+        if not message:
+            self.message = 'No list by that name found.'
+
+class UnrecognizedDateFormat(dftpException):
+    def __init__(self, message=''):
+        self.message = message
+        if not message:
+            self.message = 'Unrecognized date format. Dates should be in format m/d/yy.'
+
+class MonthOrDayTooHigh(dftpException):
+    def __init__(self, message=''):
+        self.message = message
+        if not message:
+            self.message = 'Month or day is too high.'
 
 
 ################################################################################
@@ -285,9 +299,9 @@ def get_rtm_tasks(list_name, status):
 
     data = handle_response(requests.get(methods_url, params=params))
 
-    if data['tasks']['list'][0].get('taskseries') is None:
-        raise NoTasksException
-    # return data['tasks']
+    # if list_name has been passed, this is is a list (with one item) of lists
+    # of the taskseries in that list; if no list_name, this is a list (with as
+    # as many items as the user has lists) of lists of taskseries
     return data['tasks']['list']
 
 
@@ -306,15 +320,14 @@ def save(config):
     return
 
 
-def create_Task_list(rtm_tasks, tag, due, due_before, due_after, completed_on,
-                     completed_before, completed_after, status=''):
+def create_Task_list(rtm_lists, tag='', dates={}, status=''):
     ''' Return list of Task objects by various attributes.'''
 
     tasks = []
 
-    for rtm_task in rtm_tasks:
-        if 'taskseries' in rtm_task:
-            for taskseries in rtm_task['taskseries']:
+    for rtm_list in rtm_lists:
+        if 'taskseries' in rtm_list:
+            for taskseries in rtm_list['taskseries']:
                 if tag:
                     if 'tag' in taskseries['tags']:
                         for task in taskseries['task']:
@@ -327,19 +340,39 @@ def create_Task_list(rtm_tasks, tag, due, due_before, due_after, completed_on,
     if not tasks:
         raise NoTasksException
 
-    # further filter tasks by dates
-    if due:
-        tasks = [task for task in tasks if task.due_date and task.due_date == human_date_to_arrow(due, 'due')]
-    if due_before:
-        tasks = [task for task in tasks if task.due_date and task.due_date < human_date_to_arrow(due_before, 'due')]
-    if due_after:
-        tasks = [task for task in tasks if task.due_date and task.due_date > human_date_to_arrow(due_after, 'due')]
-    if completed_on:
-        tasks = [task for task in tasks if task.due_date and task.due_date == human_date_to_arrow(completed_on, 'completed')]
-    if completed_before:
-        tasks = [task for task in tasks if task.due_date and task.due_date < human_date_to_arrow(completed_before, 'completed')]
-    if completed_after:
-        tasks = [task for task in tasks if task.due_date and task.due_date > human_date_to_arrow(completed_after, 'completed')]
+    if dates.get('due'):
+        tasks = [task for task in tasks
+                if task.due
+                and task.due != 'never'
+                and arrow.get(task.due).date()
+                    == human_date_to_arrow(dates['due'], 'due')]
+    if dates.get('due_before'):
+        tasks = [task for task in tasks
+                if task.due
+                and task.due != 'never'
+                and arrow.get(task.due).date()
+                    < human_date_to_arrow(dates['due_before'], 'due')]
+    if dates.get('due_after'):
+        tasks = [task for task in tasks
+                if task.due
+                and task.due != 'never'
+                and arrow.get(task.due).date()
+                    > human_date_to_arrow(dates['due_after'], 'due')]
+    if dates.get('completed_on'):
+        tasks = [task for task in tasks
+                if task.completed
+                and arrow.get(task.completed).date()
+                    == human_date_to_arrow(dates['completed_on'], 'completed')]
+    if dates.get('completed_before'):
+        tasks = [task for task in tasks
+                if task.completed
+                and arrow.get(task.completed).date()
+                    < human_date_to_arrow(dates['completed_before'], 'completed')]
+    if dates.get('completed_after'):
+        tasks = [task for task in tasks
+                if task.completed
+                and arrow.get(task.completed).date()
+                    > human_date_to_arrow(dates['completed_after'], 'completed')]
 
     if not tasks:
         raise NoTasksException
@@ -371,64 +404,90 @@ def split_list(all_tasks):
 
 
 def human_date_to_arrow(date, type_of_filter):
-    converted_date = ''
+    '''
+    Unless user inputted one of the three custom dates (today, tomorrow, yesterday),
+    match it to a regular expression and format into m/d/yy or raise exception,
+    then convert that to Arrow datetime.date object and return it.
+    '''
 
-    # because we have to try each of these, the higher up in the list the given
-    # format is, the quicker the result will be returned, so limit the number
-    # of formats. (And be sure to inform user of preferred format in help text.)
-    date_formats = ['M/D/YY', 'M/D', 'M/D/YYYY',
-                    'MM/DD/YY', 'MM/D/YY',
-                    'M/DD/YYYY',
-                    'MM/DD/YYYY', 'MM/D/YYYY',
-                    'M/DD/YY',
-                    'MM/DD', 'MM/D',
-                    'M/DD',
-                    ]
-
-    # set some custom dates
+    # handle some custom date possibilities
     if date.lower() == 'today':
-        return arrow.now().date()
+        return arrow.now(config['USER SETTINGS']['timezone']).date()
     elif date.lower() == 'tomorrow':
-        return arrow.now().shift(days=+1).date()
+        return arrow.now(config['USER SETTINGS']['timezone']).shift(days=1).date()
     elif date.lower() == 'yesterday':
-        return arrow.now().shift(days=-1).date()
+        return arrow.now(config['USER SETTINGS']['timezone']).shift(days=-1).date()
 
-    try:
-        converted_date = arrow.get(date, date_formats).date()
-        # if user didn't include year, arrow will set it to 1
-        # assume they meant the next date in the future
-        if converted_date.year == 1:
-            date_current_year = date + ' ' + str(arrow.get().to(config['USER SETTINGS']['timezone']).year)
+    # re to match various month/day/year formats
+    p = re.compile('\d{1,2}[./-]\d{1,2}([./-][\d]{2,4})?$')
+
+    m = p.match(date)
+
+    if m:
+        # replace . and - with /
+        date = m[0].replace('-', '/').replace('.', '/')
+
+        # split on / to truncate any extraneous digits and use yy
+        date = date.split('/')
+
+        #strip leading zeros from months and days; extra digits
+        month = date[0].lstrip('0')
+        day = date[1].lstrip('0')
+
+        # user possibly could have entered only 0 for month or day
+        if not month or not day:
+            raise UnrecognizedDateFormat
+
+        if int(month) > 12 or int(day) > 31:
+            raise MonthOrDayTooHigh
+
+        year = ''
+
+        if len(date) > 2:
+            year = date[2]
+            if len(year) == 4:
+                year = year[2:]
+            if len(year) == 3:
+                raise UnrecognizedDateFormat
+
+        date_formats = ['M/D/YY']
+
+        if year:
+            date = '/'.join([month, day, year])
+        else:  # assume year based on type of filter and current date
+            m_d = '/'.join([month, day])
+
+            current_year = str(arrow.get().to(config['USER SETTINGS']['timezone']).year)[2:]
+            m_d_current_year = '/'.join([month, day, current_year])
 
             # if date given is a due date, if not yet passed, use
             # current year, otherwise use next year.
             if type_of_filter == 'due':
-                if arrow.get(date_current_year, date_formats).date() >= arrow.now().date():
-                    converted_date = arrow.get(date_current_year, date_formats).date()
+                if arrow.get(m_d_current_year, date_formats).date() >= arrow.now().date():
+                    date = m_d_current_year
                 else:
-                    date =  date + ' ' + str(arrow.get().year + 1)
-                    converted_date = arrow.get(date, date_formats).date()
+                    date =  m_d + '/' + str(arrow.get().year + 1)[2:]
 
             # if date given is a completed date, if it not yet in past, use
             # previous year, otherwise use current year
             if type_of_filter == 'completed':
-                if arrow.get(date_current_year, date_formats).date() >= arrow.now().date():
-                    date =  date + ' ' + str(arrow.get().year - 1)
-                    converted_date = arrow.get(date, date_formats).date()
+                if arrow.get(m_d_current_year, date_formats).date() >= arrow.now().date():
+                    date =  m_d + '/' + str(arrow.get().year - 1)[2:]
                 else:
-                    converted_date = arrow.get(date_current_year, date_formats).date()
+                    date = m_d_current_year
 
-        return converted_date
+    else:
+        raise UnrecognizedDateFormat
 
-    except arrow.parser.ParserError:
-        click.secho('Unrecognized date format', fg='red')
-        return sys.exit()
+    return arrow.get(date, date_formats).date()
 
 
-def format_date(task_date):
-    ''' Convert date to formatted string for displaying to user.'''
+def format_date_display(task_date):
+    '''
+    Convert date string from iso format to "[month abbreviation] day, year"
+    (and possibly time) for displaying to user.
+    '''
 
-    # convert to arrow object and user's timezone
     if task_date != 'never':
         task_date = arrow.get(task_date).to(config['USER SETTINGS']['timezone'])
 
@@ -478,7 +537,7 @@ def display_tasks(method, list_name, tag, tasks, status, filename=''):
         tasks.sort(key=lambda t: t.due)
 
         for task in tasks:
-            formatted_date = format_date(task.due)
+            formatted_date = format_date_display(task.due)
 
             if task.is_overdue:
                 if method == 'print':
@@ -502,7 +561,7 @@ def display_tasks(method, list_name, tag, tasks, status, filename=''):
         tasks.sort(key=lambda t: t.completed)
 
         for task in tasks:
-            task.completed = format_date(task.completed)
+            task.completed = format_date_display(task.completed)
             completed_tasks_as_lists.append(convert_to_list(method, task.name, task.completed))
 
         if method == 'export':
@@ -522,11 +581,11 @@ def display_tasks(method, list_name, tag, tasks, status, filename=''):
         incomplete_tasks.sort(key=lambda t: t.due)
 
         for task in completed_tasks:
-            task.completed = format_date(task.completed)
+            task.completed = format_date_display(task.completed)
             completed_tasks_as_lists.append(convert_to_list(method, task.name, task.completed))
 
         for task in incomplete_tasks:
-            formatted_date = format_date(task.due)
+            formatted_date = format_date_display(task.due)
             if task.is_overdue:
                 if method == 'print':
                     formatted_date = click.style(formatted_date, fg='red')
@@ -537,21 +596,38 @@ def display_tasks(method, list_name, tag, tasks, status, filename=''):
         if method == 'export':
             story.append(Paragraph(heading1, styles['Heading1']))
 
-            story.append(Paragraph(str(len(incomplete_tasks)) + ' incomplete tasks', styles['Heading2']))
-            t = Table(incomplete_tasks_as_lists, colWidths=(col1_width, col2_width))
-            t.setStyle(table_style)
-            story.append(t)
+            if incomplete_tasks:
+                story.append(Paragraph(str(len(incomplete_tasks)) + ' incomplete tasks', styles['Heading2']))
+                t = Table(incomplete_tasks_as_lists, colWidths=(col1_width, col2_width))
+                t.setStyle(table_style)
+                story.append(t)
+            else:
+                story.append(Paragraph('No incomplete tasks.', styles['Heading2']))
+                story.append(Paragraph('', styles['Normal']))
 
-            story.append(Paragraph(str(len(completed_tasks)) + ' completed tasks', styles['Heading2']))
-            t = Table(completed_tasks_as_lists, colWidths=(col1_width, col2_width))
-            t.setStyle(table_style)
-            story.append(t)
+            if completed_tasks:
+                story.append(Paragraph(str(len(completed_tasks)) + ' completed tasks', styles['Heading2']))
+                t = Table(completed_tasks_as_lists, colWidths=(col1_width, col2_width))
+                t.setStyle(table_style)
+                story.append(t)
+            else:
+                story.append(Paragraph('No completed tasks.', styles['Heading2']))
+                story.append(Paragraph('', styles['Normal']))
 
         elif method == 'print':
-            click.secho('\nIncomplete Tasks', fg='green')
-            print(tabulate(incomplete_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
-            click.secho('\nCompleted Tasks', fg='green')
-            print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
+            if len(incomplete_tasks_as_lists) > 1:
+                click.secho('\nIncomplete Tasks', fg='green')
+                print(tabulate(incomplete_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
+            else:
+                print('')
+                print("No incomplete tasks.")
+            if len(completed_tasks_as_lists) > 1:
+                click.secho('\nCompleted Tasks', fg='green')
+                print(tabulate(completed_tasks_as_lists, headers="firstrow", tablefmt='fancy_grid'))
+            else:
+                print('')
+                print("No completed tasks.")
+                print('')
 
     if method == 'export':
         doc.build(story)
@@ -622,8 +698,9 @@ def lists(archived, smart, all):
 
 
 @main.command()
-@click.option('--print', '-p', 'method', flag_value='print', default=True, help='Print tasks to terminal.')
+@click.option('--print', '-p', 'method', flag_value='print', default=True, help='Print tasks to terminal (default).')
 @click.option('--export', '-e', 'method', flag_value='export', help='Export tasks to pdf.')
+@click.option('--filename', '-f', default='RTM tasks', help='Name of file to create when exporting to pdf (defaults to "RTM tasks").')
 @click.option('--list_name', '-l', default='', help='Tasks from a particular list.')
 @click.option('--tag', '-t', default='', help='Tasks with a particular tag.')
 @click.option('--incomplete', '-i', 'status', flag_value='incomplete', help='Incomplete tasks only.')
@@ -634,19 +711,15 @@ def lists(archived, smart, all):
 @click.option('--completed_on', '-co', default='', help='Tasks completed on a particular date.')
 @click.option('--completed_before', '-cb', default='', help='Tasks completed before a particular date.')
 @click.option('--completed_after', '-ca', default='', help='Tasks completed after a particular date.')
-@click.option('--filename', '-f', default='RTM tasks', help="Name of file to create.")
 def tasks(method, list_name, tag, status, due, due_before, due_after, completed_on,
         completed_before, completed_after, filename):
     '''
     List your tasks. All options can be used together, except, of course,
     for -p and -e and -i and -c.
 
-    Although dates can be given in a variety of formats, unless you choose
-    "today", "yesterday", or "tomorrow" (without the quotes), the result will be
-    returned quickest if you use the format M/D/YY, e.g. 8/5/18. Months should always
-    precede days.
-
-    Use the before and after date options together in order to get tasks between two dates.
+    For dates, you can use "today", "yesterday", or "tomorrow" as well as dates
+    in the format M/D/YY, e.g. 8/5/18. Use the before and after date options
+    together in order to get tasks between two dates.
     '''
 
     # completed_on, completed_before, and completed_after only apply to completed
@@ -656,18 +729,27 @@ def tasks(method, list_name, tag, status, due, due_before, due_after, completed_
 
     try:
         rtm_tasks = get_rtm_tasks(list_name, status)
-    except NoListException:
-        click.secho('No list by that name found.', fg='red')
+    except NoListException as e:
+        click.secho(e.message, fg='red')
         return
-    except NoTasksException:
-        click.secho('No tasks with those parameters.', fg='red')
+    except NoTasksException as e:
+        click.secho(e.message, fg='red')
         return
 
+    dates = {'due':due, 'due_before':due_before, 'due_after':due_after,
+             'completed_on':completed_on, 'completed_before':completed_before,
+             'completed_after':completed_after}
+
     try:
-        tasks = create_Task_list(rtm_tasks, tag, due, due_before, due_after,
-            completed_on, completed_before, completed_after, status=status)
-    except NoTasksException:
-        click.secho('No tasks found with those parameters.', fg='red')
+        tasks = create_Task_list(rtm_tasks, tag=tag, dates=dates, status=status)
+    except NoTasksException as e:
+        click.secho(e.message, fg='red')
+        return
+    except UnrecognizedDateFormat as e:
+        click.secho(e.message, fg='red')
+        return
+    except MonthOrDayTooHigh as e:
+        click.secho(e.message, fg='red')
         return
 
 

@@ -5,7 +5,7 @@ with open('README.md', 'r') as fh:
 
 setup(
     name='dftp',
-    version='0.1.0',
+    version='0.2.0',
     author='Kris Warner',
     author_email='kdwarn@gmail.com',
     description="Command-line interface for Remember the Milk.",

@@ -16,6 +16,10 @@ Make sure you have the latest version of pip installed:
 
 From a terminal, run `dftp` and the list of available commands will be shown.
 
+## New in Version 0.2.0
+
+You can now filter tasks by various due and/or completed dates - on, before, or after a date (and between two dates). Run `dftp tasks --help` in a terminal to see the options.
+
 ## Disclaimer
 
 This CLI uses the Remember The Milk API but is not endorsed or certified by Remember The Milk.
