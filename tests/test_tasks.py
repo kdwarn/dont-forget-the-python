@@ -7,7 +7,8 @@ import pytest
 import arrow
 
 from dftp.app import Task, convert_to_list, create_Task_list, NoTasksException, \
-    human_date_to_arrow, UnrecognizedDateFormat, MonthOrDayTooHigh, format_date_display
+    human_date_to_arrow, UnrecognizedDateFormat, MonthOrDayTooHigh, \
+    format_date_display, split_list
 
 
 # dictionary keys for variables to create Tasks
@@ -18,6 +19,9 @@ task_keys = ['due', 'completed', 'priority']
 
 config = {'USER SETTINGS': {'timezone':'America/New_York'}}
 
+################################################################################
+# test class Task
+################################################################################
 def create_random_tasks(number_of_tasks):
     ''' Creates list of *number_of_tasks* Task objects, populated with random values.'''
 
@@ -66,15 +70,40 @@ def tasks_one_random(request):
 def tasks_10_random(request):
     return request.param
 
+################################################################################
+# test non-date helper functions
+################################################################################
+def test_split_list(tasks_with_dates):
+    tasks = create_Task_list(tasks_with_dates, dates=initialize_dates())
+    incomplete_tasks, completed_tasks = split_list(tasks)
 
-def test_convert_one_random_task_to_list(tasks_one_random):
+    failures = 0
+    if len(incomplete_tasks) != 8:
+        failures += 1
+    if len(completed_tasks) != 8:
+        failures += 1
+
+    assert failures == 0
+
+
+def test_convert_one_random_task_to_list_1(tasks_one_random):
     a = convert_to_list('print', tasks_one_random.name, tasks_one_random.due)
     assert isinstance(a, list) is True
 
 
-def test_convert_10_random_tasks_to_list(tasks_10_random):
-    a = convert_to_list('print', tasks_10_random.name, tasks_10_random.due)
+def test_convert_one_random_task_to_list_2(tasks_one_random):
+    a = convert_to_list('export', tasks_one_random.name, tasks_one_random.due)
     assert isinstance(a, list) is True
+
+
+def test_convert_one_random_task_to_list_3(tasks_one_random):
+    a = convert_to_list('print', tasks_one_random.name, tasks_one_random.due)
+    assert len(a) == 2
+
+
+def test_convert_one_random_task_to_list_4(tasks_one_random):
+    a = convert_to_list('export', tasks_one_random.name, tasks_one_random.due)
+    assert len(a) == 2
 
 
 ################################################################################
@@ -127,6 +156,7 @@ def initialize_dates(due='', due_before='', due_after='',
     return {'due':due, 'due_before':due_before, 'due_after':due_after,
             'completed_on':completed_on, 'completed_before':completed_before,
             'completed_after':completed_after}
+
 
 ################################################################################
 # human_date_to_arrow should take date in a limited number of formats and
@@ -295,7 +325,11 @@ def mock_rtm_taskseries(id, name, url='', tags=[], notes=[], participants=[],
     taskseries['id'] = id
     taskseries['name'] = name
     taskseries['url'] = url
-    taskseries['tags'] = tags
+    taskseries['tags'] = {}
+    if tags:
+        taskseries['tags']['tag'] = []
+        for tag in tags:
+            taskseries['tags']['tag'].append(tag)
     taskseries['notes'] = notes
     taskseries['participants'] = participants
 
@@ -329,7 +363,7 @@ def make_list_of_rtm_lists(tasks):
 
 ################################################################################
 # testing create_Task_list, using functions mocking RTM task/list structure and
-# response, with no date filters
+# response, with no tags or date filters
 ################################################################################
 
 def test_create_Task_list_returns_1_task():
@@ -404,10 +438,69 @@ def test_create_Task_list_empty_task_list_raises_NoTasksException():
     with pytest.raises(NoTasksException):
         create_Task_list([])
 
+#######################################################mock_rtm_taskseries(#########################
+# testing create_Task_list, with tags
+################################################################################
+@pytest.fixture()
+def tasks_with_tags():
+    tasks = []
+    tasks.append(mock_rtm_taskseries(1, 'do this', tags=['coding', 'work',
+                                     'dftp', 'python', 'cli']))
+    tasks.append(mock_rtm_taskseries(2, 'do that', tags=['work', 'writing']))
+
+    return make_list_of_rtm_lists(tasks)
+
+
+def test_create_Task_list_with_tags_desired_returns_1_task(tasks_with_tags):
+    task_list = create_Task_list(tasks_with_tags, tag='writing',
+                                 dates=initialize_dates())
+
+    assert len(task_list) == 1
+
+
+def test_create_Task_list_with_tags_desired_returns_2_tasks(tasks_with_tags):
+    task_list = create_Task_list(tasks_with_tags, tag='work',
+                                 dates=initialize_dates())
+
+    assert len(task_list) == 2
+
+
+def test_create_Task_list_with_tags_desired_raises_exception(tasks_with_tags):
+    with pytest.raises(NoTasksException):
+        task_list = create_Task_list(tasks_with_tags, tag='errands',
+                                     dates=initialize_dates())
+
 
 ################################################################################
 # testing create_Task_list, with various date filters
 ################################################################################
+@pytest.fixture()
+def tasks_with_dates():
+
+    date_1_str = str(arrow.get('2018-08-05'))
+    date_2_str = str(arrow.get('2018-08-06'))
+    date_3_str = str(arrow.get('2018-08-07'))
+    date_4_str = str(arrow.get('2018-08-08'))
+
+    tasks = []
+    tasks.append(mock_rtm_taskseries(1, 'do nothing', due=date_1_str))
+    tasks.append(mock_rtm_taskseries(2, 'do nothing', due=date_1_str))
+    tasks.append(mock_rtm_taskseries(3, 'do nothing', due=date_2_str))
+    tasks.append(mock_rtm_taskseries(4, 'do nothing', due=date_2_str))
+    tasks.append(mock_rtm_taskseries(5, 'do nothing', due=date_3_str))
+    tasks.append(mock_rtm_taskseries(6, 'do nothing', due=date_3_str))
+    tasks.append(mock_rtm_taskseries(7, 'do nothing', due=date_4_str))
+    tasks.append(mock_rtm_taskseries(8, 'do nothing', due=date_4_str))
+    tasks.append(mock_rtm_taskseries(9, 'do nothing', completed=date_1_str))
+    tasks.append(mock_rtm_taskseries(10, 'do nothing', completed=date_1_str))
+    tasks.append(mock_rtm_taskseries(11, 'do nothing', completed=date_2_str))
+    tasks.append(mock_rtm_taskseries(12, 'do nothing', completed=date_2_str))
+    tasks.append(mock_rtm_taskseries(13, 'do nothing', completed=date_3_str))
+    tasks.append(mock_rtm_taskseries(14, 'do nothing', completed=date_3_str))
+    tasks.append(mock_rtm_taskseries(15, 'do nothing', completed=date_4_str))
+    tasks.append(mock_rtm_taskseries(16, 'do nothing', completed=date_4_str))
+
+    return make_list_of_rtm_lists(tasks)
 
 def test_create_Task_list_returns_one_task_with_due_date():
     tasks = []
@@ -422,41 +515,19 @@ def test_create_Task_list_returns_one_task_with_due_date():
     assert len(task_list) == 1
 
 
-def test_create_Task_list_returns_5_tasks_with_due_after():
-        tasks = []
-        due_date_1_str = str(arrow.get('2018-08-05'))
-        due_date_2_str = str(arrow.get('2018-08-07'))
-        tasks.append(mock_rtm_taskseries(1, 'do this', due=due_date_1_str))
-        tasks.append(mock_rtm_taskseries(2, 'do that', due=due_date_1_str))
-        tasks.append(mock_rtm_taskseries(3, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(4, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(5, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(6, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(7, 'do nothing', due=due_date_2_str))
-
+def test_create_Task_list_returns_6_tasks_with_due_after(tasks_with_dates):
         dates = initialize_dates(due_after='8/5/18')
 
-        task_list = create_Task_list(make_list_of_rtm_lists(tasks), dates=dates)
+        task_list = create_Task_list(tasks_with_dates, dates=dates)
 
-        assert len(task_list) == 5
+        assert len(task_list) == 6
 
-def test_create_Task_list_returns_2_tasks_with_due_before():
-        tasks = []
-        due_date_1_str = str(arrow.get('2018-08-05'))
-        due_date_2_str = str(arrow.get('2018-08-07'))
-        tasks.append(mock_rtm_taskseries(1, 'do this', due=due_date_1_str))
-        tasks.append(mock_rtm_taskseries(2, 'do that', due=due_date_1_str))
-        tasks.append(mock_rtm_taskseries(3, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(4, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(5, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(6, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(7, 'do nothing', due=due_date_2_str))
-
+def test_create_Task_list_returns_4_tasks_with_due_before(tasks_with_dates):
         dates = initialize_dates(due_before='8/7/18')
 
-        task_list = create_Task_list(make_list_of_rtm_lists(tasks), dates=dates)
+        task_list = create_Task_list(tasks_with_dates, dates=dates)
 
-        assert len(task_list) == 2
+        assert len(task_list) == 4
 
 
 def test_create_Task_list_returns_one_task_with_completed_date():
@@ -472,79 +543,38 @@ def test_create_Task_list_returns_one_task_with_completed_date():
     assert len(task_list) == 1
 
 
-def test_create_Task_list_returns_5_tasks_with_completed_after():
-        tasks = []
-        past_date_1_str = str(arrow.get('2018-08-05'))
-        past_date_2_str = str(arrow.get('2018-08-06'))
-        tasks.append(mock_rtm_taskseries(1, 'do this', completed=past_date_1_str))
-        tasks.append(mock_rtm_taskseries(2, 'do that', completed=past_date_1_str))
-        tasks.append(mock_rtm_taskseries(3, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(4, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(5, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(6, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(7, 'do nothing', completed=past_date_2_str))
-
+def test_create_Task_list_returns_6_tasks_with_completed_after(tasks_with_dates):
         dates = initialize_dates(completed_after='8/5/18')
 
-        task_list = create_Task_list(make_list_of_rtm_lists(tasks), dates=dates)
+        task_list = create_Task_list(tasks_with_dates, dates=dates)
 
-        assert len(task_list) == 5
-
-
-def test_create_Task_list_returns_2_tasks_with_completed_before():
-        tasks = []
-        past_date_1_str = str(arrow.get('2018-08-05'))
-        past_date_2_str = str(arrow.get('2018-08-06'))
-        tasks.append(mock_rtm_taskseries(1, 'do this', completed=past_date_1_str))
-        tasks.append(mock_rtm_taskseries(2, 'do that', completed=past_date_1_str))
-        tasks.append(mock_rtm_taskseries(3, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(4, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(5, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(6, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(7, 'do nothing', completed=past_date_2_str))
-
-        dates = initialize_dates(completed_before='8/6/18')
-
-        task_list = create_Task_list(make_list_of_rtm_lists(tasks), dates=dates)
-
-        assert len(task_list) == 2
+        assert len(task_list) == 6
 
 
-def test_create_Task_list_between_dates():
-        tasks = []
-        due_date_1_str = str(arrow.get('2018-08-05'))
-        due_date_2_str = str(arrow.get('2018-08-07'))
-        due_date_3_str = str(arrow.get('2018-08-08'))
-        due_date_4_str = str(arrow.get('2018-08-09'))
-        tasks.append(mock_rtm_taskseries(1, 'do this', due=due_date_1_str))
-        tasks.append(mock_rtm_taskseries(2, 'do that', due=due_date_1_str))
-        tasks.append(mock_rtm_taskseries(3, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(4, 'do nothing', due=due_date_2_str))
-        tasks.append(mock_rtm_taskseries(5, 'do nothing', due=due_date_3_str))
-        tasks.append(mock_rtm_taskseries(6, 'do nothing', due=due_date_4_str))
-        tasks.append(mock_rtm_taskseries(7, 'do nothing', due=due_date_4_str))
+def test_create_Task_list_returns_4_tasks_with_completed_before(tasks_with_dates):
+        dates = initialize_dates(completed_before='8/7/18')
 
+        task_list = create_Task_list(tasks_with_dates, dates=dates)
+
+        assert len(task_list) == 4
+
+
+def test_create_Task_list_between_dates(tasks_with_dates):
         dates = initialize_dates(due_after='8/6/18', due_before='8/9/18')
 
-        task_list = create_Task_list(make_list_of_rtm_lists(tasks), dates=dates)
+        task_list = create_Task_list(tasks_with_dates, dates=dates)
 
-        assert len(task_list) == 3
+        assert len(task_list) == 4
 
 
 # test exceptions
 
-def test_create_Task_list_no_tasks_meeting_filters_raises_NoTasksException():
-        tasks = []
-        past_date_1_str = str(arrow.get('2018-08-05'))
-        past_date_2_str = str(arrow.get('2018-08-06'))
-        tasks.append(mock_rtm_taskseries(1, 'do this', completed=past_date_1_str))
-        tasks.append(mock_rtm_taskseries(2, 'do that', completed=past_date_1_str))
-        tasks.append(mock_rtm_taskseries(3, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(4, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(5, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(6, 'do nothing', completed=past_date_2_str))
-        tasks.append(mock_rtm_taskseries(7, 'do nothing', completed=past_date_2_str))
-
+def test_create_Task_list_no_tasks_meeting_filters_raises_NoTasksException(tasks_with_dates):
         dates = initialize_dates(completed_before='8/5/18')
         with pytest.raises(NoTasksException):
-            task_list = create_Task_list(make_list_of_rtm_lists(tasks), dates=dates)
+            task_list = create_Task_list(tasks_with_dates, dates=dates)
+
+def test_create_Task_list_no_tasks_meeting_filters_raises_NoTasksException(tasks_with_dates):
+        dates = initialize_dates(due_after='8/9/18')
+        with pytest.raises(NoTasksException):
+            task_list = create_Task_list(tasks_with_dates, dates=dates)
