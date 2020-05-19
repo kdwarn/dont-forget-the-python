@@ -2,19 +2,15 @@
 
 Don't Forget the Python is a command-line interface for [Remember the Milk](https://www.rememberthemilk.com), an online task-management system.
 
-Remember the Milk is very good at what it does - and is very easy to use in the browser and various apps - so Don't Forget the Python does not focus on duplicating its abilities, but instead adds a couple features that RTM doesn't currently provide, like exporting your tasks to pdf and printing your lists and tasks to the terminal. Currently, only a simplified version of tasks is supported (name and due or completed date), but more verbose capabilities are in development.
+Remember the Milk is very good at what it does - and is very easy to use in the browser and various apps - so Don't Forget the Python does not focus on duplicating its abilities, but instead adds a couple features that RTM doesn't currently provide, like exporting your tasks to pdf and printing your lists and tasks to the terminal. Currently, only a simplified version of tasks is supported (name and due or completed date).
 
 ## Installation
 
-Make sure you have the latest version of pip installed:
-
-`pip3 install --upgrade pip` (or just `pip install --upgrade pip` if you are working from a python3 virtual environment or only have python3 installed.)
-
-`pip install dftp`
+Use [pipx](https://pypi.org/project/pipx/): `pipx install dftp`
 
 ## Usage
 
-From a terminal, run `dftp` and the list of available commands will be shown.
+From a terminal, run `dftp` and the list of available commands will be shown, including full help documentation.
 
 ## New in Version 0.2.0
 
